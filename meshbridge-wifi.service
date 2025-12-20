@@ -1,0 +1,12 @@
+[Unit]
+Description=MeshBridge WiFi SSID Setup
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/pi/MeshBridge/setup_wifi.sh
+User=root
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

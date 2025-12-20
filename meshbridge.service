@@ -1,0 +1,15 @@
+[Unit]
+Description=MeshBridge Web Application
+After=network.target meshbridge-wifi.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/pi/MeshBridge
+ExecStart=/home/pi/MeshBridge/venv/bin/python /home/pi/MeshBridge/app.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
