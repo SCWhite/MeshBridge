@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>MeshBridge 聊天室</title>
+    <style>
+        /* 基礎設定 */
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; background: #eef2f3; display: flex; flex-direction: column; height: 100vh; }
+        
+        /* 頂部標題列 (Flexbox 排版) */
+        header { 
+            background: #2c3e50; color: white; padding: 12px 15px; 
+            display: flex; align-items: center; justify-content: space-between;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1); z-index: 10;
+        }
+        
+        .header-left { display: flex; flex-direction: column; }
+        .app-name { font-size: 1.1em; font-weight: bold; }
+        .app-link { font-size: 0.75em; color: #bdc3c7; }
+
+        /* === 狀態指示燈樣式 === */
+        .status-container { display: flex; align-items: center; background: rgba(0,0,0,0.2); padding: 5px 10px; border-radius: 15px; }
+        .status-dot { width: 10px; height: 10px; border-radius: 50%; background-color: #e74c3c; margin-right: 6px; transition: background-color 0.3s; box-shadow: 0 0 5px rgba(0,0,0,0.3);}
+        .status-text { font-size: 0.75em; color: #ecf0f1; }
+        /* 上線時的綠燈 */
+        .status-dot.online { background-color: #2ecc71; box-shadow: 0 0 8px #2ecc71; }
+
+        /* 聊天區域 */
+        #chat-box { flex: 1; overflow-y: scroll; padding: 15px; display: flex; flex-direction: column; gap: 15px; }
+        .message-container { display: flex; flex-direction: column; max-width: 80%; }
+        
+        /* 氣泡基礎樣式 */
+        .bubble { padding: 10px 14px; border-radius: 16px; font-size: 0.95em; line-height: 1.4; word-wrap: break-word; box-shadow: 0 1px 2px rgba(0,0,0,0.1); position: relative;}
+        .meta { font-size: 0.7em; margin-bottom: 4px; color: #555; margin-left: 2px; }
+        .time { font-size: 0.65em; color: rgba(0,0,0,0.4); float: right; margin-left: 8px; margin-top: 4px;}
+
+        /* 系統訊息 */
+        .msg-system { align-self: center; max-width: 90%; }
+        .msg-system .bubble { background: rgba(0,0,0,0.05); color: #666; font-size: 0.8em; padding: 5px 12px; border-radius: 20px; box-shadow: none; }
+
+        /* 自己的訊息 (右側) */
+        .msg-self { align-self: flex-end; align-items: flex-end; }
+        .msg-self .bubble { background: #007bff; color: white; border-bottom-right-radius: 4px; } 
+        .msg-self .time { color: rgba(255,255,255,0.7); }
+
+        /* === 關鍵：發送失敗(或僅本地)的樣式 === */
+        /* 當 loraSuccess 為 false 時套用此樣式 */
+        .msg-self.msg-failed .bubble { 
+            background: #e67e22; /* 橘色，代表警告/未送出外網 */
+            color: white; 
+        }
+        /* 也可以加一個小圖示或文字說明 (選用) */
+        .msg-self.msg-failed .bubble::after {
+            content: "⚠️ 僅 WiFi";
+            display: block;
+            font-size: 0.6em;
+            opacity: 0.8;
+            margin-top: 2px;
+            border-top: 1px solid rgba(255,255,255,0.3);
+            padding-top: 2px;
+        }
+
+        /* 別人的訊息 (左側) */
+        .msg-other { align-self: flex-start; align-items: flex-start; }
+        .msg-other .bubble { background: #ffffff; color: #333; border-bottom-left-radius: 4px; border: 1px solid rgba(0,0,0,0.05); }
+
+        /* 輸入區域 */
+        #input-area { padding: 10px; background: white; border-top: 1px solid #ddd; display: flex; gap: 8px; align-items: center; }
+        input { padding: 12px; border: 1px solid #ccc; border-radius: 24px; outline: none; font-size: 1em; }
+        #nickname { width: 20%; min-width: 70px; background: #f8f9fa; text-align: center; font-weight: bold; color: #555; }
+        #msg-input { flex: 1; }
+        button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 24px; font-weight: bold; cursor: pointer; transition: background 0.2s; white-space: nowrap;}
+        button:active { background: #0056b3; transform: scale(0.98); }
+
+    </style>
+    <script src="/static/socket.io.min.js"></script>
+</head>
+<body>
+    <header>
+        <div class="header-left">
+            <div class="app-name">MeshBridge</div>
+            <div class="app-link">chat.meshbridge.com</div>
+        </div>
+        
+        <div class="status-container">
+            <div id="lora-dot" class="status-dot"></div>
+            <div id="lora-text" class="status-text">LoRa 斷線</div>
+        </div>
+    </header>
+    
+    <div id="chat-box"></div>
+
+    <div id="input-area">
+        <input type="text" id="nickname" placeholder="暱稱" maxlength="8">
+        <input type="text" id="msg-input" placeholder="輸入訊息...">
+        <button onclick="sendMessage()">傳送</button>
+    </div>
+
+    <script>
+        const socket = io();
+        const chatBox = document.getElementById('chat-box');
+        const msgInput = document.getElementById('msg-input');
+        const nickInput = document.getElementById('nickname');
+        const loraDot = document.getElementById('lora-dot');
+        const loraText = document.getElementById('lora-text');
+        
+        const HISTORY_LIMIT = 200;
+        const STORAGE_KEY = 'mesh_chat_history';
+
+        // --- 初始化 UUID 與 暱稱 ---
+        let myUUID = localStorage.getItem('mesh_user_id');
+        if (!myUUID) {
+            myUUID = 'user-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now().toString(36);
+            localStorage.setItem('mesh_user_id', myUUID);
+        }
+
+        if(localStorage.getItem('mesh_nickname')) {
+            nickInput.value = localStorage.getItem('mesh_nickname');
+        }
+        nickInput.addEventListener('change', () => {
+            localStorage.setItem('mesh_nickname', nickInput.value);
+        });
+
+        loadHistory();
+
+        // --- Socket 事件 ---
+
+        // 1. 監聽 LoRa 硬體狀態 (改變 Header 燈號)
+        socket.on('lora_status', function(data) {
+            if (data.online) {
+                loraDot.classList.add('online');
+                loraText.innerText = "LoRa 連線";
+            } else {
+                loraDot.classList.remove('online');
+                loraText.innerText = "LoRa 斷線";
+            }
+        });
+
+        // 2. 接收訊息
+        socket.on('new_message', function(data) {
+            saveToHistory(data);
+            renderMessage(data);
+        });
+
+        // --- 功能函式 ---
+
+        function renderMessage(data) {
+            const senderName = data.sender || 'Unknown';
+            const senderID = data.userId || 'unknown-id';
+            const text = data.text;
+            const time = data.time || '';
+            const source = data.source;
+            // 關鍵：讀取後端回傳的成功標記 (如果是舊紀錄沒有這個欄位，預設為 true)
+            const loraSuccess = (data.loraSuccess !== undefined) ? data.loraSuccess : true;
+
+            const container = document.createElement('div');
+            container.classList.add('message-container');
+
+            if (source === 'system') {
+                container.classList.add('msg-system');
+            } else if (senderID === myUUID) {
+                container.classList.add('msg-self');
+                // 如果是自己發的，且後端說傳送失敗，加入失敗樣式
+                if (!loraSuccess) {
+                    container.classList.add('msg-failed');
+                }
+            } else {
+                container.classList.add('msg-other');
+            }
+
+            const bubble = document.createElement('div');
+            bubble.classList.add('bubble');
+
+            if (source !== 'system' && senderID !== myUUID) {
+                const colorStyle = generatePastelColor(senderID);
+                bubble.style.backgroundColor = colorStyle.bg;
+                bubble.style.color = colorStyle.text;
+            }
+
+            let htmlContent = '';
+            if (source !== 'system' && senderID !== myUUID) {
+                htmlContent += `<div class="meta">${senderName}</div>`;
+            }
+            htmlContent += `${text}<span class="time">${time}</span>`;
+            
+            bubble.innerHTML = htmlContent;
+            container.appendChild(bubble);
+            chatBox.appendChild(container);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        function saveToHistory(msgData) {
+            let history = [];
+            const stored = localStorage.getItem(STORAGE_KEY);
+            if (stored) {
+                try { history = JSON.parse(stored); } catch(e){}
+            }
+            history.push(msgData);
+            if (history.length > HISTORY_LIMIT) {
+                history.shift(); 
+            }
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+        }
+
+        function loadHistory() {
+            const stored = localStorage.getItem(STORAGE_KEY);
+            if (stored) {
+                try {
+                    const history = JSON.parse(stored);
+                    if(history.length > 0) {
+                        const div = document.createElement('div');
+                        div.className = "message-container msg-system";
+                        div.innerHTML = "<div class='bubble'>--- 歷史紀錄 ---</div>";
+                        chatBox.appendChild(div);
+                    }
+                    history.forEach(data => { renderMessage(data); });
+                } catch(e) {}
+            }
+        }
+
+        function sendMessage() {
+            const text = msgInput.value.trim();
+            const nick = nickInput.value.trim();
+            if (!nick) { alert("請先輸入暱稱！"); nickInput.focus(); return; }
+            if (!text) return;
+
+            socket.emit('send_mesh', { 
+                text: text, 
+                sender: nick,
+                userId: myUUID 
+            });
+            msgInput.value = '';
+            msgInput.focus();
+        }
+
+        msgInput.addEventListener("keypress", function(event) {
+            if (event.key === "Enter") sendMessage();
+        });
+
+        function generatePastelColor(str) {
+            let hash = 0;
+            for (let i = 0; i < str.length; i++) {
+                hash = str.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            const h = Math.abs(hash) % 360;
+            return {
+                bg: `hsl(${h}, 70%, 90%)`,
+                text: '#333'
+            };
+        }
+    </script>
+</body>
+</html>
