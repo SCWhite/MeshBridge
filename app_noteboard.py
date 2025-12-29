@@ -12,7 +12,7 @@ from flask import Flask, render_template, request, redirect, url_for, jsonify, m
 from flask_socketio import SocketIO, emit
 from meshtastic.serial_interface import SerialInterface
 from pubsub import pub
-from config import BOARD_MESSAGE_CHANEL_NAME, SEND_INTERVAL_SECOND, MAX_NOTE_SHOW, MAX_ARCHIVED_NOTE_SHOW
+from config import BOARD_MESSAGE_CHANEL_NAME, SEND_INTERVAL_SECOND, ACK_TIMEOUT_SECONDS, MAX_NOTE_SHOW, MAX_ARCHIVED_NOTE_SHOW
 
 app = Flask(__name__, 
                template_folder='templates/app_noteboard',
@@ -26,6 +26,7 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 interface = None
 current_dev_path = None
 lora_connected = False
+channel_validated = False
 pending_ack = {}
 send_interval = max(SEND_INTERVAL_SECOND, 10)
 
@@ -89,6 +90,30 @@ def init_database():
 
 def get_time():
     return time.strftime("%H:%M", time.localtime())
+
+def format_note_time(timestamp_ms):
+    """
+    格式化便利貼時間顯示
+    今天|1天前|2天前..n天前 (YYYY/MM/DD HH:MM)
+    HH 為 24小時制
+    """
+    local_time = time.localtime(timestamp_ms / 1000)
+    
+    # 計算日期差異
+    note_date = datetime.fromtimestamp(timestamp_ms / 1000).date()
+    today = datetime.now().date()
+    days_diff = (today - note_date).days
+    
+    # 格式化日期時間 (24小時制)
+    formatted_datetime = time.strftime("%Y/%m/%d %H:%M", local_time)
+    
+    # 根據天數差異顯示相對時間
+    if days_diff == 0:
+        relative_time = "今天"
+    else:
+        relative_time = f"{days_diff}天前"
+    
+    return f"{relative_time} ({formatted_datetime})"
 
 def generate_note_id():
     """生成唯一的 note_id"""
@@ -301,29 +326,6 @@ def save_lora_note(lora_msg_id, board_id, body, bg_color='', author_key='', repl
         print(f"儲存 LoRa note 失敗: {e}")
         return False
 
-def save_note_to_db(board_id, text, sender, user_id, time_str, source, lora_success, reply_lora_msg_id=None):
-    """儲存 note 到資料庫"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        timestamp = int(time.time() * 1000)
-        note_id = generate_note_id()
-        bg_color = generate_bg_color(user_id)
-        status = 'sent' if lora_success else 'LAN only'
-        
-        cursor.execute('''
-            INSERT INTO notes (note_id, reply_lora_msg_id, board_id, body, bg_color, status, 
-                             created_at, updated_at, author_key, rev, deleted)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
-        ''', (note_id, reply_lora_msg_id, board_id, text, bg_color, status, timestamp, timestamp, user_id))
-        
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"儲存 note 到資料庫失敗: {e}")
-        return False
-
 def get_oldest_lan_only_note(board_id):
     """取得最舊的 LAN only 狀態的 note"""
     try:
@@ -334,7 +336,7 @@ def get_oldest_lan_only_note(board_id):
         cursor.execute('''
             SELECT note_id, body, bg_color, author_key, created_at, reply_lora_msg_id
             FROM notes 
-            WHERE board_id = ? AND status = 'LAN only' AND deleted = 0
+            WHERE board_id = ? AND (status = 'LAN only' OR status = 'Sending') AND deleted = 0
             ORDER BY created_at ASC
             LIMIT 1
         ''', (board_id,))
@@ -473,13 +475,7 @@ def get_notes_from_db(board_id, include_deleted=False):
         rows = cursor.fetchall()
         notes = []
         for row in rows:
-            local_time = time.localtime(row['created_at'] / 1000)
-            hour = local_time.tm_hour
-            period = "上午" if hour < 12 else "下午"
-            display_hour = hour if hour <= 12 else hour - 12
-            if display_hour == 0:
-                display_hour = 12
-            created_time = time.strftime(f"%Y/%m/%d {period} {display_hour:02d}:%M", local_time)
+            created_time = format_note_time(row['created_at'])
             author_display = row['author_key']
             if author_display.startswith('lora-'):
                 raw_id = author_display.replace('lora-', '')
@@ -497,7 +493,7 @@ def get_notes_from_db(board_id, include_deleted=False):
                 'timestamp': row['created_at'],
                 'userId': row['author_key'],
                 'sender': author_display,
-                'loraSuccess': row['status'] == 'sent',
+                'loraSuccess': row['status'] == 'LoRa sent',
                 'source': 'lora' if row['author_key'].startswith('lora-') else 'local',
                 'rev': row['rev'],
                 'archived': row['deleted'] == 1,
@@ -745,6 +741,28 @@ def scan_for_meshtastic():
         found_ports.extend(glob.glob(p))
     return found_ports[0] if found_ports else None
 
+def check_ack_timeout():
+    """檢查並處理 ACK 超時的訊息"""
+    global pending_ack
+    current_time = int(time.time())
+    timeout_requests = []
+    
+    for request_id, info in pending_ack.items():
+        if current_time - info['timestamp'] > ACK_TIMEOUT_SECONDS:
+            timeout_requests.append(request_id)
+    
+    for request_id in timeout_requests:
+        info = pending_ack[request_id]
+        note_id = info['note_id']
+        print(f"[ACK 超時] request_id={request_id}, note_id={note_id}")
+        print(f"  -> 將狀態從 'Sending' 改回 'LAN only'，等待重送")
+        
+        if update_note_status(note_id, 'LAN only'):
+            print(f"  -> 成功更新 note {note_id} 狀態為 'LAN only'")
+            socketio.emit('refresh_notes', {'board_id': BOARD_MESSAGE_CHANEL_NAME})
+        
+        del pending_ack[request_id]
+
 def send_scheduler_loop():
     """定期發送 LAN only notes 和處理需要更新的 notes 的排程器"""
     global interface, lora_connected, pending_ack
@@ -753,6 +771,8 @@ def send_scheduler_loop():
     while True:
         try:
             eventlet.sleep(send_interval)
+            
+            check_ack_timeout()
             
             if not interface or not lora_connected:
                 continue
@@ -812,12 +832,16 @@ def send_scheduler_loop():
                 if result:
                     request_id = result.id if hasattr(result, 'id') else None
                     if request_id:
+                        current_time = int(time.time())
                         pending_ack[request_id] = {
                             'note_id': note['note_id'],
                             'author_key': note['author_key'],
-                            'bg_color': note['bg_color']
+                            'bg_color': note['bg_color'],
+                            'timestamp': current_time
                         }
+                        update_note_status(note['note_id'], 'Sending')
                         print(f"  -> 已發送訊息，等待 ACK (request_id={request_id})")
+                        socketio.emit('refresh_notes', {'board_id': BOARD_MESSAGE_CHANEL_NAME})
                     else:
                         print(f"  -> 已發送訊息，但無 request_id")
                 else:
@@ -833,8 +857,35 @@ def send_scheduler_loop():
             import traceback
             traceback.print_exc()
 
+def validate_channel_name(interface):
+    """驗證裝置的 channel name 是否與 config 中的設定一致"""
+    global channel_validated
+    try:
+        if not interface or not interface.localNode or not interface.localNode.channels:
+            return (False, f"無法讀取裝置 channel 資訊")
+        
+        for ch in interface.localNode.channels:
+            if ch.settings and ch.settings.name == BOARD_MESSAGE_CHANEL_NAME:
+                channel_validated = True
+                print(f"[✓] Channel 名稱驗證成功: '{BOARD_MESSAGE_CHANEL_NAME}'")
+                return (True, None)
+        
+        channel_validated = False
+        error_msg = f"Channel 名稱驗證失敗: 找不到名為 '{BOARD_MESSAGE_CHANEL_NAME}' 的 channel"
+        print(f"[✗] {error_msg}")
+        print(f"[✗] 可用的 channels:")
+        for ch in interface.localNode.channels:
+            if ch.settings:
+                print(f"    - Index {ch.index}: {ch.settings.name}")
+        return (False, error_msg)
+    except Exception as e:
+        error_msg = f"Channel 驗證異常: {e}"
+        print(f"[✗] {error_msg}")
+        channel_validated = False
+        return (False, error_msg)
+
 def mesh_loop():
-    global interface, current_dev_path, lora_connected
+    global interface, current_dev_path, lora_connected, channel_validated
     print("啟動 Meshtastic 自動偵測與監聽 (NoteBoard 模式)...")
     
     while True:
@@ -842,7 +893,8 @@ def mesh_loop():
             if interface is None:
                 if lora_connected:
                     lora_connected = False
-                    socketio.emit('lora_status', {'online': False})
+                    channel_validated = False
+                    socketio.emit('lora_status', {'online': False, 'channel_validated': False, 'error_message': None})
                 
                 target_port = scan_for_meshtastic()
                 if target_port:
@@ -851,10 +903,18 @@ def mesh_loop():
                     current_dev_path = target_port
                     pub.subscribe(onReceive, "meshtastic.receive")
                     
-                    print(f">>> 成功連線至 {target_port} (Channel: {BOARD_MESSAGE_CHANEL_NAME}) <<<")
+                    print(f">>> 成功連線至 {target_port} <<<")
+                    
+                    eventlet.sleep(2)
+                    
+                    is_channel_valid, error_msg = validate_channel_name(interface)
                     
                     lora_connected = True
-                    socketio.emit('lora_status', {'online': True})
+                    socketio.emit('lora_status', {
+                        'online': True, 
+                        'channel_validated': is_channel_valid,
+                        'error_message': error_msg
+                    })
                 else:
                     time.sleep(3)
 
@@ -864,7 +924,12 @@ def mesh_loop():
                 
                 if not lora_connected:
                     lora_connected = True
-                    socketio.emit('lora_status', {'online': True})
+                    is_channel_valid, error_msg = validate_channel_name(interface)
+                    socketio.emit('lora_status', {
+                        'online': True, 
+                        'channel_validated': is_channel_valid,
+                        'error_message': error_msg
+                    })
 
         except Exception as e:
             print(f"Meshtastic 連線異常: {e}")
@@ -877,12 +942,21 @@ def mesh_loop():
             
             if lora_connected:
                 lora_connected = False
-                socketio.emit('lora_status', {'online': False})
+                channel_validated = False
+                socketio.emit('lora_status', {'online': False, 'channel_validated': False, 'error_message': None})
             
             print("正在重置狀態... (3秒後重試)")
             time.sleep(3)
             
         eventlet.sleep(2)
+
+@app.route('/api/config/channel_name', methods=['GET'])
+def get_channel_name_config():
+    """取得設定檔中的 channel name"""
+    return jsonify({
+        'success': True,
+        'channel_name': BOARD_MESSAGE_CHANEL_NAME
+    })
 
 @app.route('/api/user/uuid', methods=['GET'])
 def get_user_uuid():
@@ -1035,12 +1109,41 @@ def create_board_note(board_id):
         conn.commit()
         conn.close()
         
+        # 建立完整的 note 物件返回給前端
+        created_time = format_note_time(timestamp)
+        
+        author_display = author_key
+        if author_display.startswith('lora-'):
+            raw_id = author_display.replace('lora-', '')
+            author_display = f"LoRa-{raw_id[-4:]}" if len(raw_id) > 4 else raw_id
+        elif author_display.startswith('user-'):
+            author_display = "WebUser"
+        
+        note_obj = {
+            'noteId': note_id,
+            'replyLoraMessageId': reply_lora_msg_id,
+            'text': text,
+            'bgColor': bg_color,
+            'status': status,
+            'time': created_time,
+            'timestamp': timestamp,
+            'userId': author_key,
+            'sender': author_display,
+            'loraSuccess': False,
+            'source': 'local',
+            'rev': 1,
+            'archived': False,
+            'loraMessageId': None,
+            'isTempParentNote': False
+        }
+        
         socketio.emit('refresh_notes', {'board_id': board_id})
         
         return jsonify({
             'success': True,
             'note_id': note_id,
-            'board_id': board_id
+            'board_id': board_id,
+            'note': note_obj
         }), 201
         
     except Exception as e:
@@ -1087,7 +1190,7 @@ def update_board_note(board_id, note_id):
             conn.close()
             return jsonify({
                 'success': False,
-                'error': 'Only LAN only notes can be edited'
+                'error': 'Only LAN only notes can be edited (該便利貼可能已經完成送出.)'
             }), 403
         
         if db_author_key != author_key:
@@ -1326,40 +1429,7 @@ def gen_204():
 
 @socketio.on('connect')
 def handle_connect():
-    emit('lora_status', {'online': lora_connected})
-
-@socketio.on('send_mesh')
-def handle_msg(data):
-    text = data.get('text', '')
-    sender = data.get('sender', 'WebUser')
-    user_id = data.get('userId', 'anon')
-    
-    if not text: return
-
-    full_msg = f"[{sender}] {text}"
-    print(f"[網頁發送] {full_msg}")
-
-    is_sent_to_lora = False
-
-    if interface and lora_connected:
-        try:
-            interface.sendText(full_msg)
-            is_sent_to_lora = True
-        except Exception as e:
-            print(f"LoRa 發送失敗: {e}")
-            is_sent_to_lora = False
-    
-    save_note_to_db(
-        board_id=BOARD_MESSAGE_CHANEL_NAME,
-        text=text,
-        sender=sender,
-        user_id=user_id,
-        time_str=get_time(),
-        source='local',
-        lora_success=is_sent_to_lora
-    )
-    
-    emit('refresh_notes', {'board_id': BOARD_MESSAGE_CHANEL_NAME}, broadcast=True)
+    emit('lora_status', {'online': lora_connected, 'channel_validated': channel_validated, 'error_message': None})
 
 def run_noteboard_app():
     init_database()

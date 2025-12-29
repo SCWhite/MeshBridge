@@ -271,9 +271,31 @@ NoteBoard 使用特定格式的文字訊息在 Meshmatic LoRa 網路的Channel�
 ### 欄位說明補充
 
 #### status 狀態值
-- **`LAN only`**：留言僅存在於本地，尚未發送至 LoRa
-- **`LoRa sent`**：留言已成功發送至 LoRa 網路
-- **`LoRa received`**：從其他 LoRa 節點接收的留言
+
+`status` 欄位記錄留言的傳輸狀態，共有以下四種可能值：
+
+| 狀態值 | 說明 | 觸發時機 | 可執行操作 |
+|--------|------|----------|-----------|
+| **`LAN only`** | 留言僅存在於本地區網，尚未發送至 LoRa | • 透過 Web 介面新建留言時的初始狀態<br>• ACK 超時後從 `Sending` 狀態回退 | • 可編輯內容<br>• 可直接刪除<br>• 等待排程器發送至 LoRa |
+| **`Sending`** | 留言正在發送至 LoRa，等待 ACK 確認 | • 排程器發送留言至 LoRa 後，等待接收 ACK 封包 | • 等待 ACK 確認<br>• 若超時則回退為 `LAN only` |
+| **`LoRa sent`** | 留言已成功發送至 LoRa 網路 | • 收到 LoRa ACK 封包後，從 `Sending` 狀態更新 | • 僅可變更顏色<br>• 僅可封存（不可直接刪除）<br>• 不可編輯內容 |
+| **`LoRa received`** | 從其他 LoRa 節點接收的留言 | • 接收到其他節點透過 LoRa 發送的留言指令 | • 僅可變更顏色（需為作者）<br>• 僅可封存（需為作者）<br>• 不可編輯內容 |
+
+**狀態轉換流程**：
+
+```
+[Web 建立] → LAN only → [排程器發送] → Sending → [收到 ACK] → LoRa sent
+                ↑                            |
+                └────────[ACK 超時]──────────┘
+
+[LoRa 接收] → LoRa received
+```
+
+**注意事項**：
+- `LAN only` 和 `Sending` 狀態的留言會被排程器自動處理
+- ACK 超時時間由 `config.py` 的 `ACK_TIMEOUT_SECONDS` 設定
+- 只有 `LAN only` 狀態的留言可以編輯內容或直接刪除
+- `LoRa sent` 和 `LoRa received` 狀態的留言只能變更顏色或封存
 
 #### is_temp_parent_note
 - 當接收到回覆留言，但父留言尚未存在於本地時，設定為 1

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { io } from 'socket.io-client'
 
-const BOARD_ID = 'WangsFamily'
+const DEFAULT_BOARD_ID = 'YourChannelName'
 
 const COLOR_PALETTE = [
   'hsl(0, 70%, 85%)',      // 0: Red
@@ -51,9 +51,10 @@ const MAX_BYTES = 150
 function App() {
   const [socket, setSocket] = useState(null)
   const [notes, setNotes] = useState([])
-  const [nickname, setNickname] = useState('')
-  const [noteInput, setNoteInput] = useState('')
   const [loraOnline, setLoraOnline] = useState(false)
+  const [channelValidated, setChannelValidated] = useState(false)
+  const [channelErrorMessage, setChannelErrorMessage] = useState(null)
+  const [boardId, setBoardId] = useState(DEFAULT_BOARD_ID)
   const [myUUID, setMyUUID] = useState('')
   const [isCreatingNote, setIsCreatingNote] = useState(false)
   const [draftText, setDraftText] = useState('')
@@ -81,10 +82,13 @@ function App() {
   const [replyColorIndex, setReplyColorIndex] = useState(0)
   const [replyByteCount, setReplyByteCount] = useState(0)
   const replyTextareaRef = useRef(null)
+  const [newlyCreatedNoteId, setNewlyCreatedNoteId] = useState(null)
+  const noteRefs = useRef({})
 
-  const fetchNotes = async (includeDeleted = false) => {
+  const fetchNotes = async (includeDeleted = false, targetBoardId = null) => {
     try {
-      const response = await fetch(`/api/boards/${BOARD_ID}/notes?is_include_deleted=${includeDeleted}`)
+      const actualBoardId = targetBoardId || boardId
+      const response = await fetch(`/api/boards/${actualBoardId}/notes?is_include_deleted=${includeDeleted}`)
       const data = await response.json()
       if (data.success) {
         setNotes(data.notes)
@@ -96,6 +100,16 @@ function App() {
 
   useEffect(() => {
     const initializeApp = async () => {
+      try {
+        const channelResponse = await fetch('/api/config/channel_name')
+        const channelData = await channelResponse.json()
+        if (channelData.success) {
+          setBoardId(channelData.channel_name)
+        }
+      } catch (error) {
+        console.error('Failed to fetch channel name from backend:', error)
+      }
+
       try {
         const response = await fetch('/api/user/uuid')
         const data = await response.json()
@@ -111,23 +125,19 @@ function App() {
         setMyUUID(fallbackUuid)
       }
 
-      const savedNick = localStorage.getItem('mesh_nickname')
-      if (savedNick) {
-        setNickname(savedNick)
-      }
-
-      fetchNotes(showArchived)
-
       const newSocket = io()
       setSocket(newSocket)
 
       newSocket.on('lora_status', (data) => {
         setLoraOnline(data.online)
-      })
-
-      newSocket.on('refresh_notes', (data) => {
-        if (data.board_id === BOARD_ID) {
-          fetchNotes(showArchived)
+        setChannelValidated(data.channel_validated !== false)
+        setChannelErrorMessage(data.error_message || null)
+        
+        if (data.online && data.channel_validated === false) {
+          console.log('⚠️ LoRa 已連線，但 Channel 名稱不符合設定')
+          if (data.error_message) {
+            console.log('   ' + data.error_message)
+          }
         }
       })
     }
@@ -142,8 +152,24 @@ function App() {
   }, [])
 
   useEffect(() => {
-    fetchNotes(showArchived)
-  }, [showArchived])
+    if (!socket) return
+
+    const handleRefreshNotes = (data) => {
+      fetchNotes(showArchived, boardId)
+    }
+
+    socket.on('refresh_notes', handleRefreshNotes)
+
+    return () => {
+      socket.off('refresh_notes', handleRefreshNotes)
+    }
+  }, [socket, showArchived, boardId])
+
+  useEffect(() => {
+    if (boardId !== DEFAULT_BOARD_ID) {
+      fetchNotes(showArchived)
+    }
+  }, [showArchived, boardId])
 
   useEffect(() => {
     if (prevSortOrder.current !== sortOrder) {
@@ -208,6 +234,57 @@ function App() {
     }
   }, [isCreatingNote])
 
+  useEffect(() => {
+    if (newlyCreatedNoteId) {
+      let scrollCompleted = false
+      
+      const scrollToNote = () => {
+        const noteElement = noteRefs.current[newlyCreatedNoteId]
+        if (noteElement && !scrollCompleted) {
+          const noteRect = noteElement.getBoundingClientRect()
+          const currentScrollY = window.scrollY
+          const targetScrollY = currentScrollY + noteRect.top - 100
+          
+          window.scrollTo({
+            top: targetScrollY,
+            behavior: 'smooth'
+          })
+          
+          scrollCompleted = true
+          
+          // 捲動完成後才加上動畫 class
+          setTimeout(() => {
+            if (noteElement) {
+              noteElement.classList.add('note-paste-animation')
+            }
+          }, 500) // 等待捲動動畫完成（smooth scroll 大約需要 300-500ms）
+          
+          return true
+        }
+        return false
+      }
+
+      // 嘗試多次捲動，確保 DOM 已更新
+      let attempts = 0
+      const maxAttempts = 10
+      const scrollInterval = setInterval(() => {
+        attempts++
+        if (scrollToNote() || attempts >= maxAttempts) {
+          clearInterval(scrollInterval)
+        }
+      }, 100)
+
+      const clearTimer = setTimeout(() => {
+        setNewlyCreatedNoteId(null)
+      }, 3000) // 延長清除時間，確保動畫完整播放
+
+      return () => {
+        clearInterval(scrollInterval)
+        clearTimeout(clearTimer)
+      }
+    }
+  }, [newlyCreatedNoteId, notes])
+
 
   const showAlert = (message, title = '提示') => {
     setModalConfig({
@@ -236,38 +313,6 @@ function App() {
         }
       })
     })
-  }
-
-  const handleNicknameChange = (e) => {
-    const value = e.target.value
-    setNickname(value)
-    localStorage.setItem('mesh_nickname', value)
-  }
-
-  const addNote = () => {
-    const text = noteInput.trim()
-    const nick = nickname.trim()
-    
-    if (!nick) {
-      showAlert("請先輸入暱稱！")
-      return
-    }
-    if (!text) return
-
-    socket.emit('send_mesh', {
-      text: text,
-      sender: nick,
-      userId: myUUID
-    })
-    
-    setNoteInput('')
-  }
-
-  const handleKeyPress = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      addNote()
-    }
   }
 
   const deleteNote = async (index) => {
@@ -311,7 +356,7 @@ function App() {
     }
 
     try {
-      const response = await fetch(`/api/boards/${BOARD_ID}/notes`, {
+      const response = await fetch(`/api/boards/${boardId}/notes`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -330,6 +375,10 @@ function App() {
         setReplyText('')
         setReplyColorIndex(0)
         setReplyByteCount(0)
+        
+        if (data.note && data.note.noteId) {
+          setNewlyCreatedNoteId(data.note.noteId)
+        }
       } else {
         showAlert('張貼回覆失敗：' + (data.error || '未知錯誤'), '錯誤')
       }
@@ -359,7 +408,7 @@ function App() {
     }
 
     try {
-      const response = await fetch(`/api/boards/${BOARD_ID}/notes`, {
+      const response = await fetch(`/api/boards/${boardId}/notes`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -377,6 +426,10 @@ function App() {
         setDraftText('')
         setDraftColorIndex(0)
         setDraftByteCount(0)
+        
+        if (data.note && data.note.noteId) {
+          setNewlyCreatedNoteId(data.note.noteId)
+        }
       } else {
         showAlert('建立便利貼失敗：' + (data.error || '未知錯誤'), '錯誤')
       }
@@ -409,7 +462,7 @@ function App() {
     }
 
     try {
-      const response = await fetch(`/api/boards/${BOARD_ID}/notes/${noteId}`, {
+      const response = await fetch(`/api/boards/${boardId}/notes/${noteId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json'
@@ -436,58 +489,48 @@ function App() {
     }
   }
 
-  const handleDeleteNote = async (noteId) => {
-    const confirmed = await showConfirm('確定要刪除這個便利貼嗎？', '刪除確認')
+  const handleDeleteNote = async (noteId, isLanOnly = false) => {
+    const confirmed = await showConfirm('確定要封存這個便利貼嗎？', '確認封存')
     if (!confirmed) {
       return
     }
 
     try {
-      const response = await fetch(`/api/boards/${BOARD_ID}/notes/${noteId}`, {
-        method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          author_key: myUUID
+      let response
+      if (isLanOnly) {
+        response = await fetch(`/api/boards/${boardId}/notes/${noteId}`, {
+          method: 'DELETE',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            author_key: myUUID
+          })
         })
-      })
-
-      const data = await response.json()
-      if (!data.success) {
-        showAlert('刪除便利貼失敗：' + (data.error || '未知錯誤'), '錯誤')
+      } else {
+        response = await fetch(`/api/boards/${boardId}/notes/${noteId}/archive`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            author_key: myUUID
+          })
+        })
       }
-    } catch (error) {
-      console.error('Failed to delete note:', error)
-      showAlert('刪除便利貼失敗：' + error.message, '錯誤')
-    }
-  }
-
-  const handleArchiveNote = async (noteId) => {
-    const confirmed = await showConfirm('確定要封存這個便利貼嗎？封存後將從佈告欄移除。', '封存確認')
-    if (!confirmed) {
-      return
-    }
-
-    try {
-      const response = await fetch(`/api/boards/${BOARD_ID}/notes/${noteId}/archive`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          author_key: myUUID
-        })
-      })
 
       const data = await response.json()
       if (!data.success) {
         showAlert('封存便利貼失敗：' + (data.error || '未知錯誤'), '錯誤')
       }
     } catch (error) {
-      console.error('Failed to archive note:', error)
+      console.error('Failed to delete note:', error)
       showAlert('封存便利貼失敗：' + error.message, '錯誤')
     }
+  }
+
+  const handleArchiveNote = async (noteId) => {
+    return handleDeleteNote(noteId, false)
   }
 
   const handleOpenColorPicker = (note) => {
@@ -505,7 +548,7 @@ function App() {
     if (!colorPickerNote) return
 
     try {
-      const response = await fetch(`/api/boards/${BOARD_ID}/notes/${colorPickerNote.noteId}/color`, {
+      const response = await fetch(`/api/boards/${boardId}/notes/${colorPickerNote.noteId}/color`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -533,7 +576,8 @@ function App() {
       case 'LoRa received':
         return 'LoRa接收'
       case 'sent':
-        return 'LoRa發送'
+      case 'LoRa sent':
+        return 'LoRa送出'
       case 'local':
         return '⚠️ 僅區網'
       case 'LAN only':
@@ -672,8 +716,8 @@ function App() {
     const bgColor = data.bgColor || generatePastelColor(senderID).bg
 
     const isMyNote = senderID === myUUID
-    const canEdit = isMyNote && status === 'LAN only'
-    const canManage = isMyNote && status !== 'LAN only'
+    const canEdit = isMyNote && status === 'LAN only' && !data.archived
+    const canManage = isMyNote && status !== 'LAN only' && !data.archived
     const isEditing = editingNoteId === data.noteId
 
     if (isEditing) {
@@ -721,8 +765,8 @@ function App() {
             ))}
           </div>
           <div className="draft-actions">
-            <button className="btn-submit" onClick={() => handleSubmitEdit(data.noteId)}>更新</button>
             <button className="btn-cancel" onClick={handleCancelEdit}>取消</button>
+            <button className="btn-submit" onClick={() => handleSubmitEdit(data.noteId)}>更新</button>
           </div>
         </div>
       )
@@ -731,12 +775,22 @@ function App() {
     return (
       <div 
         key={data.noteId || index} 
+        ref={(el) => {
+          if (data.noteId) {
+            noteRefs.current[data.noteId] = el
+          }
+        }}
         className={`sticky-note ${status === 'local' ? 'note-failed' : ''} ${isReordering ? 'reordering' : ''} ${isReply ? 'reply-note' : ''}`}
         style={{
           backgroundColor: bgColor,
           color: '#333'
         }}
       >
+        {(data.archived || data.isTempParentNote) && (
+          <div className="note-label">
+            {data.archived ? '已封存' : '暫無法取得前張便利貼'}
+          </div>
+        )}
         <div className="note-content">{highlightText(text, keywordFilter)}</div>
         <div className="note-footer">
           <span className="note-time">{time}</span>
@@ -745,12 +799,12 @@ function App() {
         {canEdit && (
           <div className="note-actions">
             <button className="btn-edit" onClick={() => handleEditNote(data)}>✏️</button>
-            <button className="btn-delete" onClick={() => handleDeleteNote(data.noteId)}>🗑️</button>
+            <button className="btn-delete" onClick={() => handleDeleteNote(data.noteId, true)}>🗑️</button>
           </div>
         )}
         {canManage && (
           <div className="note-actions">
-            <button className="btn-archive" onClick={() => handleArchiveNote(data.noteId)}>📦</button>
+            <button className="btn-delete" onClick={() => handleDeleteNote(data.noteId, false)}>🗑️</button>
             <button className="btn-color" onClick={() => handleOpenColorPicker(data)}>🎨</button>
           </div>
         )}
@@ -825,8 +879,8 @@ function App() {
                 ))}
               </div>
               <div className="draft-actions">
-                <button className="btn-submit" onClick={handleSubmitReply}>送出</button>
                 <button className="btn-cancel" onClick={handleCancelReply}>取消</button>
+                <button className="btn-submit" onClick={handleSubmitReply}>送出</button>
               </div>
             </div>
           </div>
@@ -849,15 +903,20 @@ function App() {
     <>
       <header className={headerVisible ? 'header-visible' : 'header-hidden'}>
         <div className="header-left">
-          <div className="app-name">MeshBridge: {BOARD_ID} 便利貼公告欄</div>
+          <div className="app-name">MeshBridge: {boardId} 便利貼公告欄</div>
           <div className="app-link">noteboard.meshbridge.com</div>
         </div>
         
-        <div className="status-container">
-          <div className={`status-dot ${loraOnline ? 'online' : ''}`}></div>
+        <div className="status-container" style={{ position: 'relative' }}>
+          <div className={`status-dot ${loraOnline ? (channelValidated ? 'online' : 'warning') : ''}`}></div>
           <div className="status-text">
-            {loraOnline ? 'LoRa 連線' : 'LoRa 斷線'}
+            {loraOnline ? (channelValidated ? 'LoRa 連線' : 'LoRa 連線') : 'LoRa 斷線'}
           </div>
+          {loraOnline && !channelValidated && channelErrorMessage && (
+            <div className="status-tooltip">
+              {channelErrorMessage}
+            </div>
+          )}
         </div>
       </header>
 
@@ -959,8 +1018,8 @@ function App() {
                 ))}
               </div>
               <div className="draft-actions">
-                <button className="btn-submit" onClick={handleSubmitDraft}>送出</button>
                 <button className="btn-cancel" onClick={handleCancelDraft}>取消</button>
+                <button className="btn-submit" onClick={handleSubmitDraft}>送出</button>
               </div>
             </div>
           )}
