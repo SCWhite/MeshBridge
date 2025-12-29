@@ -27,7 +27,7 @@ interface = None
 current_dev_path = None
 lora_connected = False
 pending_ack = {}
-send_interval = max(SEND_INTERVAL_SECOND, 5)
+send_interval = max(SEND_INTERVAL_SECOND, 10)
 
 DB_PATH = 'noteboard.db'
 MAX_NOTES = 200
@@ -58,7 +58,7 @@ def init_database():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS notes (
             note_id TEXT PRIMARY KEY,
-            reply_id TEXT,
+            reply_lora_msg_id TEXT,
             board_id TEXT NOT NULL,
             body TEXT NOT NULL,
             bg_color TEXT,
@@ -71,7 +71,13 @@ def init_database():
             resent_count INTEGER NOT NULL DEFAULT 0,
             is_need_update_lora INTEGER NOT NULL DEFAULT 0,
             lora_msg_id TEXT,
-            FOREIGN KEY (reply_id) REFERENCES notes(note_id)
+            is_temp_parent_note INTEGER NOT NULL DEFAULT 0,
+            is_pined_note INTEGER NOT NULL DEFAULT 0,
+            resent_priority INTEGER NOT NULL DEFAULT 0,
+            grid_mode TEXT NOT NULL DEFAULT '',
+            grid_x INTEGER NOT NULL DEFAULT 0,
+            grid_y INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (reply_lora_msg_id) REFERENCES notes(note_id)
         )
     ''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_board_id ON notes(board_id)')
@@ -130,6 +136,19 @@ def note_exists(note_id):
         return count > 0
     except Exception as e:
         print(f"檢查 note 是否存在失敗: {e}")
+        return False
+
+def lora_msg_id_exists(lora_msg_id):
+    """檢查 lora_msg_id 是否存在"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM notes WHERE lora_msg_id = ?', (lora_msg_id,))
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count > 0
+    except Exception as e:
+        print(f"檢查 lora_msg_id 是否存在失敗: {e}")
         return False
 
 def update_note_color(note_id, author_key, color_index, need_lora_update=False):
@@ -210,34 +229,20 @@ def archive_note(note_id, author_key, need_lora_update=False):
         print(f"封存 note 失敗: {e}")
         return False
 
-def save_lora_note(note_id, board_id, body, bg_color='', author_key='', reply_id=None):
+def save_lora_note(lora_msg_id, board_id, body, bg_color='', author_key='', reply_lora_msg_id=None):
     """儲存 LoRa 接收的 note"""
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         timestamp = int(time.time() * 1000)
         status = 'LoRa received'
+        note_id = generate_note_id()
         
         cursor.execute('''
-            INSERT INTO notes (note_id, reply_id, board_id, body, bg_color, status, 
+            INSERT INTO notes (note_id, reply_lora_msg_id, board_id, body, bg_color, status, 
                              created_at, updated_at, author_key, rev, deleted, lora_msg_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)
-        ''', (note_id, reply_id, board_id, body, bg_color, status, timestamp, timestamp, author_key, note_id))
-        
-        cursor.execute('SELECT COUNT(*) FROM notes WHERE board_id = ? AND deleted = 0', (board_id,))
-        count = cursor.fetchone()[0]
-        
-        if count > MAX_NOTES:
-            cursor.execute('''
-                UPDATE notes 
-                SET deleted = 1, updated_at = ?
-                WHERE note_id IN (
-                    SELECT note_id FROM notes 
-                    WHERE board_id = ? AND deleted = 0
-                    ORDER BY created_at ASC 
-                    LIMIT ?
-                )
-            ''', (timestamp, board_id, count - MAX_NOTES))
+        ''', (note_id, reply_lora_msg_id, board_id, body, bg_color, status, timestamp, timestamp, author_key, lora_msg_id))
         
         conn.commit()
         conn.close()
@@ -246,7 +251,7 @@ def save_lora_note(note_id, board_id, body, bg_color='', author_key='', reply_id
         print(f"儲存 LoRa note 失敗: {e}")
         return False
 
-def save_note_to_db(board_id, text, sender, user_id, time_str, source, lora_success, reply_id=None):
+def save_note_to_db(board_id, text, sender, user_id, time_str, source, lora_success, reply_lora_msg_id=None):
     """儲存 note 到資料庫"""
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -254,28 +259,13 @@ def save_note_to_db(board_id, text, sender, user_id, time_str, source, lora_succ
         timestamp = int(time.time() * 1000)
         note_id = generate_note_id()
         bg_color = generate_bg_color(user_id)
-        status = 'sent' if lora_success else 'local'
+        status = 'sent' if lora_success else 'LAN only'
         
         cursor.execute('''
-            INSERT INTO notes (note_id, reply_id, board_id, body, bg_color, status, 
+            INSERT INTO notes (note_id, reply_lora_msg_id, board_id, body, bg_color, status, 
                              created_at, updated_at, author_key, rev, deleted)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
-        ''', (note_id, reply_id, board_id, text, bg_color, status, timestamp, timestamp, user_id))
-        
-        cursor.execute('SELECT COUNT(*) FROM notes WHERE board_id = ? AND deleted = 0', (board_id,))
-        count = cursor.fetchone()[0]
-        
-        if count > MAX_NOTES:
-            cursor.execute('''
-                UPDATE notes 
-                SET deleted = 1, updated_at = ?
-                WHERE note_id IN (
-                    SELECT note_id FROM notes 
-                    WHERE board_id = ? AND deleted = 0
-                    ORDER BY created_at ASC 
-                    LIMIT ?
-                )
-            ''', (timestamp, board_id, count - MAX_NOTES))
+        ''', (note_id, reply_lora_msg_id, board_id, text, bg_color, status, timestamp, timestamp, user_id))
         
         conn.commit()
         conn.close()
@@ -292,7 +282,7 @@ def get_oldest_lan_only_note(board_id):
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT note_id, body, bg_color, author_key, created_at
+            SELECT note_id, body, bg_color, author_key, created_at, reply_lora_msg_id
             FROM notes 
             WHERE board_id = ? AND status = 'LAN only' AND deleted = 0
             ORDER BY created_at ASC
@@ -308,7 +298,8 @@ def get_oldest_lan_only_note(board_id):
                 'body': row['body'],
                 'bg_color': row['bg_color'],
                 'author_key': row['author_key'],
-                'created_at': row['created_at']
+                'created_at': row['created_at'],
+                'reply_lora_msg_id': row['reply_lora_msg_id']
             }
         return None
     except Exception as e:
@@ -412,8 +403,8 @@ def get_notes_from_db(board_id, include_deleted=False):
         
         if include_deleted:
             cursor.execute('''
-                SELECT note_id, reply_id, body, bg_color, status, 
-                       created_at, updated_at, author_key, rev, deleted
+                SELECT note_id, reply_lora_msg_id, body, bg_color, status, 
+                       created_at, updated_at, author_key, rev, deleted, lora_msg_id, is_temp_parent_note
                 FROM notes 
                 WHERE board_id = ?
                 ORDER BY created_at DESC
@@ -421,8 +412,8 @@ def get_notes_from_db(board_id, include_deleted=False):
             ''', (board_id, limit))
         else:
             cursor.execute('''
-                SELECT note_id, reply_id, body, bg_color, status, 
-                       created_at, updated_at, author_key, rev, deleted
+                SELECT note_id, reply_lora_msg_id, body, bg_color, status, 
+                       created_at, updated_at, author_key, rev, deleted, lora_msg_id, is_temp_parent_note
                 FROM notes 
                 WHERE board_id = ? AND deleted = 0
                 ORDER BY created_at DESC
@@ -438,7 +429,7 @@ def get_notes_from_db(board_id, include_deleted=False):
             display_hour = hour if hour <= 12 else hour - 12
             if display_hour == 0:
                 display_hour = 12
-            created_time = time.strftime(f"%Y/%m/%d ({period}) {display_hour:02d}:%M", local_time)
+            created_time = time.strftime(f"%Y/%m/%d {period} {display_hour:02d}:%M", local_time)
             author_display = row['author_key']
             if author_display.startswith('lora-'):
                 raw_id = author_display.replace('lora-', '')
@@ -448,7 +439,7 @@ def get_notes_from_db(board_id, include_deleted=False):
             
             notes.append({
                 'noteId': row['note_id'],
-                'replyId': row['reply_id'],
+                'replyLoraMessageId': row['reply_lora_msg_id'],
                 'text': row['body'],
                 'bgColor': row['bg_color'],
                 'status': row['status'],
@@ -459,7 +450,9 @@ def get_notes_from_db(board_id, include_deleted=False):
                 'loraSuccess': row['status'] == 'sent',
                 'source': 'lora' if row['author_key'].startswith('lora-') else 'local',
                 'rev': row['rev'],
-                'archived': row['deleted'] == 1
+                'archived': row['deleted'] == 1,
+                'loraMessageId': row['lora_msg_id'],
+                'isTempParentNote': row['is_temp_parent_note'] == 1
             })
         
         conn.close()
@@ -568,9 +561,9 @@ def onReceive(packet, interface):
             
             if msg.startswith('/msg [new]'):
                 body = msg[10:]
-                print(f"[新訊息] note_id={lora_msg_id}, body={body}")
+                print(f"[新訊息] lora_msg_id={lora_msg_id}, body={body}")
                 if save_lora_note(
-                    note_id=lora_msg_id,
+                    lora_msg_id=lora_msg_id,
                     board_id=BOARD_MESSAGE_CHANEL_NAME,
                     body=body,
                     bg_color='',
@@ -580,13 +573,13 @@ def onReceive(packet, interface):
                     
             elif msg.startswith('/msg [') and ']' in msg:
                 end_bracket = msg.index(']')
-                note_id = msg[6:end_bracket]
+                resend_lora_msg_id = msg[6:end_bracket]
                 body = msg[end_bracket + 1:]
-                print(f"[重發訊息] note_id={note_id}, body={body}")
+                print(f"[重發訊息] lora_msg_id={resend_lora_msg_id}, body={body}")
                 
-                if not note_exists(note_id):
+                if not lora_msg_id_exists(resend_lora_msg_id):
                     if save_lora_note(
-                        note_id=note_id,
+                        lora_msg_id=resend_lora_msg_id,
                         board_id=BOARD_MESSAGE_CHANEL_NAME,
                         body=body,
                         bg_color='',
@@ -594,7 +587,7 @@ def onReceive(packet, interface):
                     ):
                         should_refresh = True
                 else:
-                    print(f"  -> note_id {note_id} 已存在，略過")
+                    print(f"  -> lora_msg_id {resend_lora_msg_id} 已存在，略過")
                     
             elif msg.startswith('/color [') and ']' in msg:
                 end_bracket = msg.index(']')
@@ -638,6 +631,43 @@ def onReceive(packet, interface):
                     should_refresh = True
                 else:
                     print(f"  -> 封存失敗，note_id {note_id} 不存在或 author_key 不符")
+                    
+            elif msg.startswith('/reply <new>[') and ']' in msg:
+                end_bracket = msg.index(']', 13)
+                parent_lora_msg_id = msg[13:end_bracket]
+                body = msg[end_bracket + 1:]
+                print(f"[新回覆訊息] parent_lora_msg_id={parent_lora_msg_id}, body={body}")
+                
+                is_temp_parent = 0
+                
+                if lora_msg_id_exists(parent_lora_msg_id):
+                    reply_lora_msg_id = parent_lora_msg_id
+                    print(f"  -> 找到父訊息 lora_msg_id: {parent_lora_msg_id}")
+                else:
+                    reply_lora_msg_id = parent_lora_msg_id
+                    is_temp_parent = 1
+                    print(f"  -> 父訊息 lora_msg_id {parent_lora_msg_id} 不存在本機，仍將 reply_lora_msg_id 設為 {parent_lora_msg_id}，並設定 is_temp_parent_note=1")
+                
+                try:
+                    conn = sqlite3.connect(DB_PATH)
+                    cursor = conn.cursor()
+                    timestamp = int(time.time() * 1000)
+                    status = 'LoRa received'
+                    reply_note_id = generate_note_id()
+                    
+                    cursor.execute('''
+                        INSERT INTO notes (note_id, reply_lora_msg_id, board_id, body, bg_color, status, 
+                                         created_at, updated_at, author_key, rev, deleted, lora_msg_id, is_temp_parent_note)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
+                    ''', (reply_note_id, reply_lora_msg_id, BOARD_MESSAGE_CHANEL_NAME, body, '', status, 
+                          timestamp, timestamp, '', lora_msg_id, is_temp_parent))
+                    
+                    conn.commit()
+                    conn.close()
+                    should_refresh = True
+                    print(f"  -> 成功儲存回覆訊息")
+                except Exception as e:
+                    print(f"  -> 儲存回覆訊息失敗: {e}")
                     
             else:
                 if not msg.startswith('/'):
@@ -707,10 +737,20 @@ def send_scheduler_loop():
                 continue
             
             print(f"[排程器] 準備發送 note_id={note['note_id']}")
+            print(f"  -> note 完整資料: {note}")
             
             try:
                 channel_index = get_channel_index(interface, BOARD_MESSAGE_CHANEL_NAME)
-                msg = f"/msg [new]{note['body']}"
+                
+                reply_lora_msg_id = note.get('reply_lora_msg_id')
+                print(f"  -> reply_lora_msg_id 值: {reply_lora_msg_id} (type: {type(reply_lora_msg_id)})")
+                
+                if reply_lora_msg_id:
+                    msg = f"/reply <new>[{reply_lora_msg_id}]{note['body']}"
+                    print(f"  -> 使用 /reply 指令 (reply_lora_msg_id={reply_lora_msg_id})")
+                else:
+                    msg = f"/msg [new]{note['body']}"
+                    print(f"  -> 使用 /msg 指令 (無 reply_lora_msg_id)")
                 
                 result = interface.sendText(msg, channelIndex=channel_index, wantAck=True)
                 
@@ -800,24 +840,90 @@ def get_user_uuid():
 
 @app.route('/api/boards/<board_id>/notes', methods=['GET'])
 def get_board_notes(board_id):
-    """取得指定 board 的所有 notes"""
+    """取得指定 board 的所有 notes，包含 reply_notes 階層結構"""
     is_include_deleted = request.args.get('is_include_deleted', 'false').lower() == 'true'
-    notes = get_notes_from_db(board_id, include_deleted=is_include_deleted)
+    all_notes = get_notes_from_db(board_id, include_deleted=is_include_deleted)
+    
+    # 建立 lora_msg_id 到 note 的映射
+    lora_msg_id_map = {}
+    for note in all_notes:
+        if note.get('loraMessageId'):
+            lora_msg_id_map[note['loraMessageId']] = note
+    
+    # 分離 parent notes 和 reply notes
+    parent_notes = []
+    reply_notes_pool = []
+    
+    for note in all_notes:
+        if note.get('replyLoraMessageId') is None:
+            # reply_lora_msg_id 為 null，是 parent note
+            note['replyNotes'] = []
+            parent_notes.append(note)
+        elif note.get('isTempParentNote'):
+            # reply_lora_msg_id 不為 null，但 is_temp_parent_note=1，也放入 parent_notes
+            note['replyNotes'] = []
+            parent_notes.append(note)
+            reply_notes_pool.append(note)
+        else:
+            # reply_lora_msg_id 不為 null 且 is_temp_parent_note=0，是 reply note
+            reply_notes_pool.append(note)
+    
+    # 為每個 parent note 建立 reply_notes
+    for parent in parent_notes:
+        parent_lora_msg_id = parent.get('loraMessageId')
+        
+        # 如果沒有 lora_msg_id，跳過（LAN only 的 note 不支援回覆）
+        if not parent_lora_msg_id:
+            continue
+        
+        # 收集所有回覆此 parent 的 notes
+        replies = []
+        
+        # 遞迴函數：收集所有層級的回覆（只透過 lora_msg_id 匹配）
+        def collect_replies(target_lora_msg_id, collected_ids=None):
+            if collected_ids is None:
+                collected_ids = set()
+            
+            if target_lora_msg_id in collected_ids:
+                return []
+            
+            collected_ids.add(target_lora_msg_id)
+            found_replies = []
+            
+            for reply_note in reply_notes_pool:
+                if reply_note.get('replyLoraMessageId') == target_lora_msg_id:
+                    found_replies.append(reply_note)
+                    # 遞迴收集此 reply 的子回覆
+                    child_lora_msg_id = reply_note.get('loraMessageId')
+                    if child_lora_msg_id:
+                        child_replies = collect_replies(child_lora_msg_id, collected_ids)
+                        found_replies.extend(child_replies)
+            
+            return found_replies
+        
+        replies = collect_replies(parent_lora_msg_id)
+        
+        # 按時間排序（由舊到新）
+        replies.sort(key=lambda x: x.get('timestamp', 0))
+        
+        parent['replyNotes'] = replies
+    
     return jsonify({
         'success': True,
         'board_id': board_id,
-        'notes': notes,
-        'count': len(notes)
+        'notes': parent_notes,
+        'count': len(parent_notes)
     })
 
 @app.route('/api/boards/<board_id>/notes', methods=['POST'])
 def create_board_note(board_id):
-    """建立新的 note (LAN only 模式)"""
+    """建立新的 note (LAN only 模式)，支援 parent_note_id 來建立回覆"""
     try:
         data = request.get_json()
         text = data.get('text', '').strip()
         author_key = data.get('author_key', 'user-unknown')
         color_index = data.get('color_index', 0)
+        parent_note_id = data.get('parent_note_id', None)
         
         if not text:
             return jsonify({
@@ -832,11 +938,29 @@ def create_board_note(board_id):
         bg_color = get_color_from_palette(color_index)
         status = 'LAN only'
         
+        # 處理回覆關係：parent_note_id 現在直接就是父 note 的 lora_msg_id
+        reply_lora_msg_id = None
+        if parent_note_id:
+            # 驗證此 lora_msg_id 是否存在
+            cursor.execute('''
+                SELECT note_id FROM notes 
+                WHERE lora_msg_id = ? AND board_id = ? AND deleted = 0
+            ''', (parent_note_id, board_id))
+            parent_result = cursor.fetchone()
+            if parent_result:
+                reply_lora_msg_id = parent_note_id
+            else:
+                conn.close()
+                return jsonify({
+                    'success': False,
+                    'error': 'Parent note not found'
+                }), 404
+        
         cursor.execute('''
-            INSERT INTO notes (note_id, reply_id, board_id, body, bg_color, status, 
+            INSERT INTO notes (note_id, reply_lora_msg_id, board_id, body, bg_color, status, 
                              created_at, updated_at, author_key, rev, deleted)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
-        ''', (note_id, None, board_id, text, bg_color, status, timestamp, timestamp, author_key))
+        ''', (note_id, reply_lora_msg_id, board_id, text, bg_color, status, timestamp, timestamp, author_key))
         
         cursor.execute('SELECT COUNT(*) FROM notes WHERE board_id = ? AND deleted = 0', (board_id,))
         count = cursor.fetchone()[0]

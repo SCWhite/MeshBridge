@@ -270,6 +270,69 @@ header.header-hidden {
   animation: fadeInGrid 0.3s ease-out;
 }
 
+.note-with-replies {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.reply-notes-container {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin-left: 25px;
+  margin-top: -5px;
+}
+
+.reply-note {
+  margin-top: -5px;
+  width: calc(100% - 25px);
+  box-shadow: 0 -2px 4px rgba(0, 0, 0, 0.15), 0 4px 8px rgba(0, 0, 0, 0.15);
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+  position: relative;
+  z-index: 1;
+}
+
+.reply-note:hover {
+  z-index: 2;
+}
+
+.add-reply-btn {
+  width: 50px;
+  height: 50px;
+  border: 2px dashed #95a5a6;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.6);
+  color: #7f8c8d;
+  font-size: 1.8em;
+  font-weight: bold;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  margin-top: 5px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.add-reply-btn:hover:not(:disabled) {
+  border-color: #2c3e50;
+  background: rgba(255, 255, 255, 0.9);
+  color: #2c3e50;
+  transform: scale(1.05);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.add-reply-btn:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.add-reply-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 @keyframes fadeInGrid {
   from {
     opacity: 0;
@@ -730,6 +793,14 @@ header.header-hidden {
 
 /* RWD Improvements for Mobile */
 @media (max-width: 768px) {
+  .reply-notes-container {
+    margin-left: 20px;
+  }
+
+  .reply-note {
+    width: calc(100% - 20px);
+  }
+
   header {
     padding: 10px 12px;
     flex-wrap: wrap;
@@ -830,6 +901,12 @@ header.header-hidden {
     font-size: 1em;
   }
 
+  .add-reply-btn {
+    width: 44px;
+    height: 44px;
+    font-size: 1.5em;
+  }
+
   .fab {
     width: 56px;
     height: 56px;
@@ -849,7 +926,7 @@ header.header-hidden {
   }
 
   .draft-textarea {
-    min-height: 80px;
+    min-height: 120px;
     font-size: 1.35em;
     padding: 6px;
     margin-bottom: 10px;
@@ -909,6 +986,14 @@ header.header-hidden {
 }
 
 @media (max-width: 480px) {
+  .reply-notes-container {
+    margin-left: 15px;
+  }
+
+  .reply-note {
+    width: calc(100% - 15px);
+  }
+
   .notes-grid {
     grid-template-columns: 1fr;
     gap: 10px;

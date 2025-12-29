@@ -13,7 +13,7 @@ const COLOR_PALETTE = [
   'hsl(180, 70%, 85%)',    // 6: Cyan
   'hsl(210, 70%, 85%)',    // 7: Light Blue
   'hsl(240, 70%, 85%)',    // 8: Blue
-  'hsl(270, 70%, 85%)',    // 9: Purple
+  'hsl(270, 70%, 85%)',    // 9: Purple<span class="note-time">2025/12/29 (上午) 11:30</span>
   'hsl(300, 70%, 85%)',    // 10: Magenta
   'hsl(330, 70%, 85%)',    // 11: Pink
   'hsl(0, 0%, 85%)',       // 12: Light Gray
@@ -76,6 +76,11 @@ function App() {
   const [isComposing, setIsComposing] = useState(false)
   const [isReordering, setIsReordering] = useState(false)
   const prevSortOrder = useRef(sortOrder)
+  const [isReplyingTo, setIsReplyingTo] = useState(null)
+  const [replyText, setReplyText] = useState('')
+  const [replyColorIndex, setReplyColorIndex] = useState(0)
+  const [replyByteCount, setReplyByteCount] = useState(0)
+  const replyTextareaRef = useRef(null)
 
   const fetchNotes = async (includeDeleted = false) => {
     try {
@@ -284,6 +289,68 @@ function App() {
     setDraftByteCount(0)
   }
 
+  const handleCreateReply = (parentNoteId) => {
+    setIsReplyingTo(parentNoteId)
+    setReplyText('')
+    setReplyColorIndex(0)
+    setReplyByteCount(0)
+  }
+
+  const handleCancelReply = () => {
+    setIsReplyingTo(null)
+    setReplyText('')
+    setReplyColorIndex(0)
+    setReplyByteCount(0)
+  }
+
+  const handleSubmitReply = async () => {
+    const text = replyText.trim()
+    if (!text) {
+      showAlert('請輸入回覆內容！')
+      return
+    }
+
+    try {
+      const response = await fetch(`/api/boards/${BOARD_ID}/notes`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          text: text,
+          author_key: myUUID,
+          color_index: replyColorIndex,
+          parent_note_id: isReplyingTo
+        })
+      })
+
+      const data = await response.json()
+      if (data.success) {
+        setIsReplyingTo(null)
+        setReplyText('')
+        setReplyColorIndex(0)
+        setReplyByteCount(0)
+      } else {
+        showAlert('張貼回覆失敗：' + (data.error || '未知錯誤'), '錯誤')
+      }
+    } catch (error) {
+      console.error('Failed to create reply:', error)
+      showAlert('張貼回覆失敗：' + error.message, '錯誤')
+    }
+  }
+
+  const handleReplyTextChange = (e) => {
+    const newText = e.target.value
+    const byteLength = getUTF8ByteLength(newText)
+    
+    if (!isComposing && byteLength > MAX_BYTES) {
+      return
+    }
+    
+    setReplyText(newText)
+    setReplyByteCount(byteLength)
+  }
+
   const handleSubmitDraft = async () => {
     const text = draftText.trim()
     if (!text) {
@@ -480,9 +547,21 @@ function App() {
     let filtered = notes.filter(note => {
       if (keywordFilter.trim()) {
         const keyword = keywordFilter.toLowerCase()
-        const text = (note.text || '').toLowerCase()
-        const sender = (note.sender || '').toLowerCase()
-        return text.includes(keyword) || sender.includes(keyword)
+        const parentText = (note.text || '').toLowerCase()
+        const parentSender = (note.sender || '').toLowerCase()
+        
+        if (parentText.includes(keyword) || parentSender.includes(keyword)) {
+          return true
+        }
+        
+        const replyNotes = note.replyNotes || []
+        const hasMatchingReply = replyNotes.some(reply => {
+          const replyText = (reply.text || '').toLowerCase()
+          const replySender = (reply.sender || '').toLowerCase()
+          return replyText.includes(keyword) || replySender.includes(keyword)
+        })
+        
+        return hasMatchingReply
       }
       
       return true
@@ -553,7 +632,38 @@ function App() {
     }
   }
 
-  const renderNote = (data, index) => {
+  const highlightText = (text, keyword) => {
+    if (!keyword.trim()) {
+      return text
+    }
+
+    const lowerText = text.toLowerCase()
+    const lowerKeyword = keyword.toLowerCase()
+    const parts = []
+    let lastIndex = 0
+
+    let index = lowerText.indexOf(lowerKeyword)
+    while (index !== -1) {
+      if (index > lastIndex) {
+        parts.push(text.substring(lastIndex, index))
+      }
+      parts.push(
+        <mark key={`${index}-${lastIndex}`} style={{ backgroundColor: 'yellow', color: '#333' }}>
+          {text.substring(index, index + keyword.length)}
+        </mark>
+      )
+      lastIndex = index + keyword.length
+      index = lowerText.indexOf(lowerKeyword, lastIndex)
+    }
+
+    if (lastIndex < text.length) {
+      parts.push(text.substring(lastIndex))
+    }
+
+    return parts.length > 0 ? parts : text
+  }
+
+  const renderNote = (data, index, isReply = false) => {
     const senderName = data.sender || 'Unknown'
     const senderID = data.userId || 'unknown-id'
     const text = data.text
@@ -621,13 +731,13 @@ function App() {
     return (
       <div 
         key={data.noteId || index} 
-        className={`sticky-note ${status === 'local' ? 'note-failed' : ''} ${isReordering ? 'reordering' : ''}`}
+        className={`sticky-note ${status === 'local' ? 'note-failed' : ''} ${isReordering ? 'reordering' : ''} ${isReply ? 'reply-note' : ''}`}
         style={{
           backgroundColor: bgColor,
           color: '#333'
         }}
       >
-        <div className="note-content">{text}</div>
+        <div className="note-content">{highlightText(text, keywordFilter)}</div>
         <div className="note-footer">
           <span className="note-time">{time}</span>
           <span className="note-status">{getStatusDisplay(status)}</span>
@@ -644,6 +754,93 @@ function App() {
             <button className="btn-color" onClick={() => handleOpenColorPicker(data)}>🎨</button>
           </div>
         )}
+      </div>
+    )
+  }
+
+  const renderNoteWithReplies = (note, index) => {
+    const replyNotes = note.replyNotes || []
+    const sortedReplies = [...replyNotes].sort((a, b) => {
+      return new Date(a.timestamp || 0) - new Date(b.timestamp || 0)
+    })
+    
+    // 找出整串便利貼的最後一張（用於回覆）
+    const lastNote = sortedReplies.length > 0 ? sortedReplies[sortedReplies.length - 1] : note
+    const lastNoteLoraMessageId = lastNote.loraMessageId
+    const lastNoteStatus = lastNote.status
+    
+    const isReplyingToThis = isReplyingTo === lastNoteLoraMessageId && lastNoteLoraMessageId && lastNoteStatus !== 'LAN only'
+    
+    return (
+      <div key={note.noteId || index} className="note-with-replies">
+        {renderNote(note, index, false)}
+        {sortedReplies.length > 0 && (
+          <div className="reply-notes-container">
+            {sortedReplies.map((reply, replyIdx) => renderNote(reply, `${index}-reply-${replyIdx}`, true))}
+          </div>
+        )}
+        
+        {isReplyingToThis ? (
+          <div className="reply-notes-container">
+            <div 
+              className="sticky-note draft-note reply-note"
+              style={{
+                backgroundColor: COLOR_PALETTE[replyColorIndex],
+                color: '#333'
+              }}
+            >
+              <div className="draft-header">張貼回覆</div>
+              <textarea
+                ref={replyTextareaRef}
+                className="draft-textarea"
+                value={replyText}
+                onChange={handleReplyTextChange}
+                onCompositionStart={handleCompositionStart}
+                onCompositionEnd={(e) => handleCompositionEnd(e, false)}
+                placeholder="輸入回覆內容..."
+                autoFocus
+              />
+              <div className="byte-counter-container">
+                <div className="byte-counter-bar">
+                  <div 
+                    className="byte-counter-fill"
+                    style={{ 
+                      width: `${Math.min((replyByteCount / MAX_BYTES) * 100, 100)}%`,
+                      backgroundColor: replyByteCount > MAX_BYTES ? '#d32f2f' : '#3498db'
+                    }}
+                  />
+                </div>
+                <div className="byte-counter-text" style={{ color: replyByteCount > MAX_BYTES ? '#d32f2f' : '#666' }}>
+                  {replyByteCount}/{MAX_BYTES}
+                </div>
+              </div>
+              <div className="color-picker">
+                {COLOR_PALETTE.map((color, idx) => (
+                  <div
+                    key={idx}
+                    className={`color-option ${replyColorIndex === idx ? 'selected' : ''}`}
+                    style={{ backgroundColor: color }}
+                    onClick={() => setReplyColorIndex(idx)}
+                  />
+                ))}
+              </div>
+              <div className="draft-actions">
+                <button className="btn-submit" onClick={handleSubmitReply}>送出</button>
+                <button className="btn-cancel" onClick={handleCancelReply}>取消</button>
+              </div>
+            </div>
+          </div>
+        ) : (lastNoteLoraMessageId && lastNoteStatus !== 'LAN only') ? (
+          <div className="reply-notes-container">
+            <button 
+              className="add-reply-btn"
+              onClick={() => handleCreateReply(lastNoteLoraMessageId)}
+              disabled={isCreatingNote || isReplyingTo !== null}
+            >
+              +
+            </button>
+          </div>
+        ) : null}
       </div>
     )
   }
@@ -715,7 +912,7 @@ function App() {
         </div>
 
         <div className="notes-grid">
-          {getFilteredAndSortedNotes().map((note, idx) => renderNote(note, idx))}
+          {getFilteredAndSortedNotes().map((note, idx) => renderNoteWithReplies(note, idx))}
           
           {isCreatingNote && (
             <div 
@@ -778,7 +975,7 @@ function App() {
 
       <footer className="app-footer">
         <div className="footer-left">uid={myUUID}</div>
-        <div className="footer-right">v0.1.0</div>
+        <div className="footer-right">mqBoard v0.1.0</div>
       </footer>
 
       {modalConfig.show && (
