@@ -521,6 +521,8 @@ header.header-hidden {
   display: flex;
   align-items: center;
   gap: 5px;
+  position: relative;
+  z-index: 5;
 }
 
 .note-status {
