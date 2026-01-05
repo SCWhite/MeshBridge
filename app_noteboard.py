@@ -1065,7 +1065,66 @@ def get_user_uuid():
 def get_board_notes(board_id):
     """取得指定 board 的所有 notes，包含 reply_notes 階層結構"""
     is_include_deleted = request.args.get('is_include_deleted', 'false').lower() == 'true'
-    all_notes = get_notes_from_db(board_id, include_deleted=is_include_deleted)
+    
+    # 當 is_include_deleted=False 時，仍需取得所有 notes 以正確處理 reply 關係
+    # 因為 deleted=0 的 reply note 可能指向 deleted=1 的 parent note
+    all_notes_raw = get_notes_from_db(board_id, include_deleted=True)
+    
+    # 如果不顯示已封存，需要進行智慧過濾
+    if not is_include_deleted:
+        # 建立 lora_msg_id 到 note 的映射（用於查找 parent chain）
+        lora_msg_id_to_note = {}
+        for note in all_notes_raw:
+            if note.get('loraMessageId'):
+                lora_msg_id_to_note[note['loraMessageId']] = note
+        
+        # 收集所有 deleted=1 的 lora_msg_id（這些 parent 不應顯示）
+        deleted_lora_msg_ids = set()
+        for note in all_notes_raw:
+            if note.get('archived') and note.get('loraMessageId'):
+                deleted_lora_msg_ids.add(note['loraMessageId'])
+        
+        # 輔助函數：沿著 reply chain 往上找到第一個未刪除的 parent 的 lora_msg_id
+        def find_valid_parent_lora_msg_id(reply_lora_msg_id, visited=None):
+            if visited is None:
+                visited = set()
+            
+            # 防止無限迴圈
+            if reply_lora_msg_id in visited:
+                return None
+            visited.add(reply_lora_msg_id)
+            
+            # 如果指向的 parent 未刪除，直接返回
+            if reply_lora_msg_id not in deleted_lora_msg_ids:
+                return reply_lora_msg_id
+            
+            # 指向的 parent 已刪除，往上找
+            parent_note = lora_msg_id_to_note.get(reply_lora_msg_id)
+            if parent_note and parent_note.get('replyLoraMessageId'):
+                # 繼續往上找
+                return find_valid_parent_lora_msg_id(parent_note['replyLoraMessageId'], visited)
+            
+            # 已刪除的 parent 沒有更上層的 parent，返回 None（成為獨立 note）
+            return None
+        
+        # 過濾 notes：只保留 deleted=0 的
+        # 對於 reply note，如果其 replyLoraMessageId 指向已刪除的 parent，沿 chain 往上找
+        # 如果 root 已刪除（valid_parent 為 None），則整串都不顯示
+        all_notes = []
+        for note in all_notes_raw:
+            if not note.get('archived'):
+                # deleted=0，保留
+                # 檢查其 replyLoraMessageId 是否指向已刪除的 parent
+                if note.get('replyLoraMessageId') in deleted_lora_msg_ids:
+                    # 沿著 reply chain 往上找到第一個未刪除的 parent
+                    valid_parent = find_valid_parent_lora_msg_id(note['replyLoraMessageId'])
+                    if valid_parent is None:
+                        # root 已刪除，整串都不顯示，跳過此 note
+                        continue
+                    note['replyLoraMessageId'] = valid_parent
+                all_notes.append(note)
+    else:
+        all_notes = all_notes_raw
     
     # 建立 lora_msg_id 到 note 的映射
     lora_msg_id_map = {}
