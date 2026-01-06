@@ -7,12 +7,19 @@ import os
 import glob
 import sqlite3
 import uuid
+import re
+import subprocess
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, redirect, url_for, jsonify, make_response, session
 from flask_socketio import SocketIO, emit
 from meshtastic.serial_interface import SerialInterface
 from pubsub import pub
 from config import BOARD_MESSAGE_CHANEL_NAME, SEND_INTERVAL_SECOND, ACK_TIMEOUT_SECONDS, MAX_NOTE_SHOW, MAX_ARCHIVED_NOTE_SHOW
+
+try:
+    from config import UID_SOURCE
+except ImportError:
+    UID_SOURCE = "mac"
 
 # 驗證 BOARD_MESSAGE_CHANEL_NAME 設定
 FORBIDDEN_CHANNEL_NAMES = ["MeshTW", "Emergency!"]
@@ -149,6 +156,24 @@ def generate_user_uuid():
     alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789'
     import random
     return ''.join(random.choice(alphabet) for _ in range(8))
+
+MAC_RE = re.compile(r"lladdr\s+([0-9a-f:]{17})", re.I)
+
+def mac_from_ip(ip: str, iface: str = "wlan0") -> str | None:
+    """從 IP 取得 MAC address (移除冒號)"""
+    try:
+        out = subprocess.run(
+            ["ip", "neigh", "show", "dev", iface, ip],
+            capture_output=True, text=True, check=False
+        ).stdout
+        m = MAC_RE.search(out)
+        if m:
+            mac_with_colons = m.group(1).lower()
+            return mac_with_colons.replace(':', '')
+        return None
+    except Exception as e:
+        print(f"Error getting MAC from IP {ip}: {e}")
+        return None
 
 def get_or_create_user_uuid():
     """從 session/cookie 取得或建立用戶 UUID"""
@@ -1153,12 +1178,28 @@ def get_channel_name_config():
 
 @app.route('/api/user/uuid', methods=['GET'])
 def get_user_uuid():
-    """取得或建立用戶 UUID (使用 session/cookie)"""
-    user_uuid = get_or_create_user_uuid()
-    return jsonify({
-        'success': True,
-        'uuid': user_uuid
-    })
+    """取得或建立用戶 UUID (依照 UID_SOURCE 設定)"""
+    if UID_SOURCE == "mac":
+        client_ip = request.remote_addr
+        mac_address = mac_from_ip(client_ip)
+        if mac_address:
+            return jsonify({
+                'success': True,
+                'uuid': mac_address
+            })
+        else:
+            print(f"MAC 模式失敗，改用 flask_session 模式 (IP: {client_ip})")
+            user_uuid = get_or_create_user_uuid()
+            return jsonify({
+                'success': True,
+                'uuid': user_uuid
+            })
+    else:
+        user_uuid = get_or_create_user_uuid()
+        return jsonify({
+            'success': True,
+            'uuid': user_uuid
+        })
 
 @app.route('/api/boards/<board_id>/notes', methods=['GET'])
 def get_board_notes(board_id):
