@@ -22,6 +22,11 @@ echo "Copying configuration files to /etc/systemd/system/ ..."
 cp "$SCRIPT_DIR/meshbridge-wifi.service" /etc/systemd/system/
 cp "$SCRIPT_DIR/meshbridge.service" /etc/systemd/system/
 
+# Replace hardcoded paths with actual script directory
+echo "Updating paths in service files..."
+sed -i "s|/home/pi/MeshBridge|$SCRIPT_DIR|g" /etc/systemd/system/meshbridge-wifi.service
+sed -i "s|/home/pi/MeshBridge|$SCRIPT_DIR|g" /etc/systemd/system/meshbridge.service
+
 # Set permissions (standard is 644)
 chmod 644 /etc/systemd/system/meshbridge-wifi.service
 chmod 644 /etc/systemd/system/meshbridge.service
