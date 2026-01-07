@@ -1,0 +1,58 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Database files (should be mounted as volumes)
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+.windsurf/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Installation scripts (not needed in container)
+install.sh
+setup_*.sh
+*.service
+scp.sh
+
+# Documentation
+README*.md
+LICENSE
+
+# Docker files
+Dockerfile
+docker-compose*.yml
+.dockerignore
+build_and_push_docker.sh
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.bak

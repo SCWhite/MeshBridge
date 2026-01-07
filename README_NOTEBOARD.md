@@ -39,7 +39,7 @@ source venv/bin/activate
 python3 app.py
 ```
 
-#### 方式二：使用 Systemd 服務，開機自動啟動
+#### 方式二：使用 Systemd 服務，開機自動啟動（與 MeshBridge 整合使用採用此一方式）
 ```bash
 sudo systemctl start meshbridge.service
 sudo systemctl status meshbridge.service
@@ -49,9 +49,41 @@ sudo systemctl status meshbridge.service
 sudo systemctl enable meshbridge.service
 ```
 
+#### 方式三：使用 Docker 容器執行（僅建議 Linux 環境）
+
+**⚠️ 重要限制說明**
+
+Docker 執行方式**僅建議在 Linux 系統上使用**，因為 USB 裝置掛載在不同作業系統上有以下限制：
+
+- **macOS**：Docker Desktop for Mac 不支援將主機的 USB 裝置以 `/dev/xxx` 的方式直接映射進容器。這是 Docker Desktop 在 macOS 上的架構限制。
+- **Windows (WSL2)**：需再透過 `usbipd-win` 工具將 USB 轉發到 WSL2
+
+**在 Linux 上使用 Docker：**
+
+```bash
+# 1. 確認 USB 裝置路徑（通常是 /dev/ttyACM0 或 /dev/ttyUSB0）
+ls /dev/tty*
+
+# 2. 編輯 docker-compose.yml，確認裝置路徑正確
+# devices:
+#   - /dev/ttyACM0:/dev/ttyACM0
+
+# 3. 從 Docker Hub 拉取並啟動
+docker compose pull
+docker compose up -d
+
+# 4. 查看日誌
+docker compose logs -f
+
+# 5. 停止服務
+docker compose down
+```
+
+**macOS/Windows 使用者建議**：請使用「方式一：直接執行」來運行 MeshBridge，以確保 LoRa USB 裝置能正常存取。
+
 ### 存取介面
 
-- **本地存取**：`http://10.0.0.1` 或 `http://noteboard.meshbridge.com`
+- **本地存取**：`http://localhost` 
 - **服務埠號**：Port 80 (HTTP)
 - **WebSocket**：自動連接至相同主機
 

@@ -1,0 +1,18 @@
+services:
+  meshbridge:
+    image: kklabs/meshbridge:latest
+    container_name: meshbridge
+    restart: always
+    network_mode: host
+    
+    devices:
+      - /dev/ttyUSB0:/dev/ttyUSB0
+    
+    privileged: true
+    
+    volumes:
+      - ./noteboard.db:/app/noteboard.db
+      - ./config.py:/app/config.py
+      
+    environment:
+      - TZ=Asia/Taipei
