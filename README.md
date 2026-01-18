@@ -82,7 +82,15 @@ MeshBridge/
 
 ```
 
-## 自動化安裝
+## 自動下載安裝 (推薦)
+
+如果您使用的是 Raspberry Pi OS (Debian-based)，可以使用以下指令一鍵完成下載與安裝：
+
+```bash
+curl -sSL https://raw.githubusercontent.com/SCWhite/MeshBridge/main/quick_install.sh | bash
+```
+
+## 自動化安裝 (手動下載)
 
 因為手動有點煩人
 ```bash
