@@ -16,6 +16,7 @@ from flask_socketio import SocketIO, emit
 from meshtastic.serial_interface import SerialInterface
 from pubsub import pub
 from config import BOARD_MESSAGE_CHANEL_NAME, SEND_INTERVAL_SECOND, ACK_TIMEOUT_SECONDS, MAX_NOTE_SHOW, MAX_ARCHIVED_NOTE_SHOW, NOTEBOARD_ADMIN_PASSCODE
+from app import get_power_status
 
 # 抑制 Meshtastic 的 protobuf 解析錯誤日誌（這些是暫時性錯誤，不影響功能）
 logging.getLogger('meshtastic.mesh_interface').setLevel(logging.CRITICAL)
@@ -828,7 +829,13 @@ def onReceive(packet, interface):
         
         if 'decoded' in packet and packet['decoded']['portnum'] == 'TEXT_MESSAGE_APP':
             msg = packet['decoded']['text']
-            raw_id = packet.get('fromId', 'Unknown')
+            raw_id = packet.get('fromId')
+            if raw_id is None:
+                from_num = packet.get('from')
+                if from_num is not None:
+                    raw_id = f"!{from_num:08x}"
+                else:
+                    raw_id = 'Unknown'
             sender_display = f"LoRa-{raw_id[-4:]}" if raw_id and len(raw_id) > 4 else (raw_id or 'Unknown')
             lora_uuid = f"lora-{raw_id}"
             lora_msg_id = str(packet.get('id', 'N/A'))
@@ -1293,11 +1300,27 @@ def mesh_loop():
                 if lora_connected:
                     lora_connected = False
                     channel_validated = False
-                    socketio.emit('lora_status', {'online': False, 'channel_validated': False, 'error_message': None})
+                    socketio.emit('lora_status', {'online': False, 'channel_validated': False, 'error_message': None, 'power_issue': False})
                 
                 target_port = scan_for_meshtastic()
                 if target_port:
-                    print(f"發現裝置於: {target_port}，嘗試連線...")
+                    print(f"發現裝置於: {target_port}，檢查電源狀態...")
+                    
+                    # 檢查電源狀態
+                    power_status = get_power_status()
+                    if not power_status['is_normal']:
+                        print(f"[✗] 電源狀態異常: {power_status['error_message']}")
+                        print(f"[✗] 跳過連線，等待電源恢復正常...")
+                        socketio.emit('lora_status', {
+                            'online': False, 
+                            'channel_validated': False,
+                            'error_message': None,
+                            'power_issue': True
+                        })
+                        time.sleep(5)
+                        continue
+                    else:
+                        print(f"[✓] 電源狀態正常，嘗試連線...")
                     
                     # 嘗試連線，最多重試 3 次
                     max_retries = 3
@@ -1367,7 +1390,8 @@ def mesh_loop():
                     socketio.emit('lora_status', {
                         'online': True, 
                         'channel_validated': is_channel_valid,
-                        'error_message': error_msg
+                        'error_message': error_msg,
+                        'power_issue': False
                     })
                 else:
                     time.sleep(3)
@@ -1382,7 +1406,8 @@ def mesh_loop():
                     socketio.emit('lora_status', {
                         'online': True, 
                         'channel_validated': is_channel_valid,
-                        'error_message': error_msg
+                        'error_message': error_msg,
+                        'power_issue': False
                     })
 
         except Exception as e:
@@ -1398,7 +1423,7 @@ def mesh_loop():
             if lora_connected:
                 lora_connected = False
                 channel_validated = False
-                socketio.emit('lora_status', {'online': False, 'channel_validated': False, 'error_message': None})
+                socketio.emit('lora_status', {'online': False, 'channel_validated': False, 'error_message': None, 'power_issue': False})
                 
                 # 檢測 USB 連線異常，通知前端
                 if "裝置路徑" in error_str and "已消失" in error_str:

@@ -69,7 +69,13 @@ def onReceive(packet, interface):
     try:
         if 'decoded' in packet and packet['decoded']['portnum'] == 'TEXT_MESSAGE_APP':
             msg = packet['decoded']['text']
-            raw_id = packet.get('fromId', 'Unknown')
+            raw_id = packet.get('fromId')
+            if raw_id is None:
+                from_num = packet.get('from')
+                if from_num is not None:
+                    raw_id = f"!{from_num:08x}"
+                else:
+                    raw_id = 'Unknown'
             sender_display = f"LoRa-{raw_id[-4:]}" if len(raw_id) > 4 else raw_id
             lora_uuid = f"lora-{raw_id}"
 

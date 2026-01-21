@@ -54,6 +54,7 @@ function App() {
   const [loraOnline, setLoraOnline] = useState(false)
   const [channelValidated, setChannelValidated] = useState(false)
   const [channelErrorMessage, setChannelErrorMessage] = useState(null)
+  const [powerIssue, setPowerIssue] = useState(false)
   const [boardId, setBoardId] = useState(DEFAULT_BOARD_ID)
   const [myUUID, setMyUUID] = useState('')
   const [isCreatingNote, setIsCreatingNote] = useState(false)
@@ -209,6 +210,7 @@ function App() {
         setLoraOnline(data.online)
         setChannelValidated(data.channel_validated !== false)
         setChannelErrorMessage(data.error_message || null)
+        setPowerIssue(data.power_issue || false)
         
         if (data.online && data.channel_validated === false) {
           console.log('⚠️ LoRa 已連線，但 Channel 名稱不符合設定')
@@ -1378,7 +1380,7 @@ function App() {
         <div className="status-container" style={{ position: 'relative' }}>
           <div className={`status-dot ${loraOnline ? (channelValidated ? 'online' : 'warning') : ''}`}></div>
           <div className="status-text">
-            {loraOnline ? (channelValidated ? 'LoRa 連線' : 'LoRa 連線') : 'LoRa 斷線'}
+            {loraOnline ? (channelValidated ? 'LoRa 連線' : 'LoRa 連線') : powerIssue ? 'LoRa 斷線 (RPi供電不足)' : 'LoRa 斷線'}
           </div>
           {loraOnline && !channelValidated && channelErrorMessage && (
             <div className="status-tooltip">
@@ -1518,7 +1520,7 @@ function App() {
 
       <footer className="app-footer">
         <div className="footer-left">uid={myUUID}</div>
-        <div className="footer-right">MeshNoteboard v0.2.2</div>
+        <div className="footer-right">MeshNoteboard v0.2.3</div>
       </footer>
 
       {modalConfig.show && (
