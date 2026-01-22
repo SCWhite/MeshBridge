@@ -1273,7 +1273,7 @@ function App() {
                     const rect = e.currentTarget.getBoundingClientRect()
                     setSenderTooltipPosition({
                       top: rect.bottom + 8,
-                      left: rect.left
+                      left: rect.right - 150
                     })
                     setSenderTooltip(data.noteId)
                     setSenderTooltipData(data)
