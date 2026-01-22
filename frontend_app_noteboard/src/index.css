@@ -560,6 +560,20 @@ header.header-hidden {
   transform: scale(0.95);
 }
 
+.note-status.sender-clickable {
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.note-status.sender-clickable:hover {
+  background: rgba(230, 126, 34, 0.4);
+  transform: scale(1.05);
+}
+
+.note-status.sender-clickable:active {
+  transform: scale(0.95);
+}
+
 .ack-counter-wrapper {
   position: relative;
   display: inline-block;

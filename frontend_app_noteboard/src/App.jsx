@@ -91,6 +91,11 @@ function App() {
   const ackTooltipRef = useRef(null)
   const ackCounterRefs = useRef({})
   const touchStartPos = useRef({ x: 0, y: 0 })
+  const [senderTooltip, setSenderTooltip] = useState(null)
+  const [senderTooltipPosition, setSenderTooltipPosition] = useState({ top: 0, left: 0 })
+  const [senderTooltipData, setSenderTooltipData] = useState(null)
+  const senderTooltipRef = useRef(null)
+  const senderStatusRefs = useRef({})
   const [isAdmin, setIsAdmin] = useState(false)
   const [showAdminModal, setShowAdminModal] = useState(false)
   const [adminPasscode, setAdminPasscode] = useState('')
@@ -300,6 +305,25 @@ function App() {
       }
     }
   }, [ackTooltip])
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (senderTooltip && senderTooltipRef.current && !senderTooltipRef.current.contains(event.target)) {
+        const senderStatus = event.target.closest('.note-status.sender-clickable')
+        if (!senderStatus) {
+          setSenderTooltip(null)
+          setSenderTooltipData(null)
+        }
+      }
+    }
+
+    if (senderTooltip) {
+      document.addEventListener('mousedown', handleClickOutside)
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside)
+      }
+    }
+  }, [senderTooltip])
 
   useEffect(() => {
     const handleScroll = () => {
@@ -1232,6 +1256,32 @@ function App() {
                   />
                 </span>
               </span>
+            ) : status === 'LoRa received' && data.senderNodeDisplay ? (
+              <span 
+                ref={(el) => {
+                  if (data.noteId) {
+                    senderStatusRefs.current[data.noteId] = el
+                  }
+                }}
+                className="note-status sender-clickable"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (senderTooltip === data.noteId) {
+                    setSenderTooltip(null)
+                    setSenderTooltipData(null)
+                  } else {
+                    const rect = e.currentTarget.getBoundingClientRect()
+                    setSenderTooltipPosition({
+                      top: rect.bottom + 8,
+                      left: rect.left
+                    })
+                    setSenderTooltip(data.noteId)
+                    setSenderTooltipData(data)
+                  }
+                }}
+              >
+                {getStatusDisplay(status)}
+              </span>
             ) : (
               <span className="note-status">
                 {getStatusDisplay(status)}
@@ -1595,6 +1645,34 @@ function App() {
                 {ack.displayId}
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {senderTooltip && senderTooltipData?.senderNodeDisplay && (
+        <div 
+          className="ack-tooltip" 
+          ref={senderTooltipRef}
+          style={{
+            top: `${senderTooltipPosition.top}px`,
+            left: `${senderTooltipPosition.left}px`
+          }}
+        >
+          <button 
+            className="ack-tooltip-close"
+            onClick={(e) => {
+              e.stopPropagation()
+              setSenderTooltip(null)
+              setSenderTooltipData(null)
+            }}
+          >
+            ✕
+          </button>
+          <div className="ack-tooltip-header">發送節點</div>
+          <div className="ack-tooltip-list">
+            <div className="ack-tooltip-item">
+              {senderTooltipData.senderNodeDisplay}
+            </div>
           </div>
         </div>
       )}

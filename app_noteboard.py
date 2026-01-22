@@ -147,6 +147,7 @@ def init_database():
             grid_mode TEXT NOT NULL DEFAULT '',
             grid_x INTEGER NOT NULL DEFAULT 0,
             grid_y INTEGER NOT NULL DEFAULT 0,
+            lora_node_id TEXT,
             FOREIGN KEY (reply_lora_msg_id) REFERENCES notes(note_id)
         )
     ''')
@@ -170,6 +171,27 @@ def init_database():
     conn.commit()
     conn.close()
     print("資料庫初始化完成")
+
+def migrate_database():
+    """檢查並執行資料庫遷移"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("PRAGMA table_info(notes)")
+        columns = [column[1] for column in cursor.fetchall()]
+        
+        if 'lora_node_id' not in columns:
+            print("[資料庫遷移] 偵測到 notes 表缺少 lora_node_id 欄位，開始遷移...")
+            cursor.execute('ALTER TABLE notes ADD COLUMN lora_node_id TEXT')
+            conn.commit()
+            print("[資料庫遷移] 已成功新增 lora_node_id 欄位")
+        else:
+            print("[資料庫遷移] notes 表已包含 lora_node_id 欄位，無需遷移")
+    except Exception as e:
+        print(f"[資料庫遷移] 遷移失敗: {e}")
+    finally:
+        conn.close()
 
 def get_time():
     return time.strftime("%H:%M", time.localtime())
@@ -517,7 +539,7 @@ def pin_note_by_lora_msg_id(lora_msg_id, author_key):
         print(f"置頂 note 失敗: {e}")
         return False
 
-def save_lora_note(lora_msg_id, board_id, body, bg_color='', author_key='', reply_lora_msg_id=None):
+def save_lora_note(lora_msg_id, board_id, body, bg_color='', author_key='', reply_lora_msg_id=None, lora_node_id=''):
     """儲存 LoRa 接收的 note"""
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -528,9 +550,9 @@ def save_lora_note(lora_msg_id, board_id, body, bg_color='', author_key='', repl
         
         cursor.execute('''
             INSERT INTO notes (note_id, reply_lora_msg_id, board_id, body, bg_color, status, 
-                             created_at, updated_at, author_key, rev, deleted, lora_msg_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)
-        ''', (note_id, reply_lora_msg_id, board_id, body, bg_color, status, timestamp, timestamp, author_key, lora_msg_id))
+                             created_at, updated_at, author_key, rev, deleted, lora_msg_id, lora_node_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
+        ''', (note_id, reply_lora_msg_id, board_id, body, bg_color, status, timestamp, timestamp, author_key, lora_msg_id, lora_node_id))
         
         conn.commit()
         conn.close()
@@ -669,7 +691,7 @@ def get_notes_from_db(board_id, include_deleted=False):
         if include_deleted:
             cursor.execute('''
                 SELECT note_id, reply_lora_msg_id, body, bg_color, status, 
-                       created_at, updated_at, author_key, rev, deleted, lora_msg_id, is_temp_parent_note, is_pined_note
+                       created_at, updated_at, author_key, rev, deleted, lora_msg_id, is_temp_parent_note, is_pined_note, lora_node_id
                 FROM notes 
                 WHERE board_id = ?
                 ORDER BY created_at DESC
@@ -678,7 +700,7 @@ def get_notes_from_db(board_id, include_deleted=False):
         else:
             cursor.execute('''
                 SELECT note_id, reply_lora_msg_id, body, bg_color, status, 
-                       created_at, updated_at, author_key, rev, deleted, lora_msg_id, is_temp_parent_note, is_pined_note
+                       created_at, updated_at, author_key, rev, deleted, lora_msg_id, is_temp_parent_note, is_pined_note, lora_node_id
                 FROM notes 
                 WHERE board_id = ? AND deleted = 0
                 ORDER BY created_at DESC
@@ -696,6 +718,12 @@ def get_notes_from_db(board_id, include_deleted=False):
             elif author_display.startswith('user-'):
                 author_display = "WebUser"
             
+            lora_node_id = row['lora_node_id'] or ''
+            sender_node_display = ''
+            if lora_node_id and lora_node_id.startswith('lora-'):
+                raw_node_id = lora_node_id.replace('lora-', '')
+                sender_node_display = f"LoRa-{raw_node_id[-4:]}" if len(raw_node_id) > 4 else raw_node_id
+            
             notes.append({
                 'noteId': row['note_id'],
                 'replyLoraMessageId': row['reply_lora_msg_id'],
@@ -712,7 +740,9 @@ def get_notes_from_db(board_id, include_deleted=False):
                 'archived': row['deleted'] == 1,
                 'loraMessageId': row['lora_msg_id'],
                 'isTempParentNote': row['is_temp_parent_note'] == 1,
-                'isPinedNote': row['is_pined_note'] == 1
+                'isPinedNote': row['is_pined_note'] == 1,
+                'loraNodeId': lora_node_id,
+                'senderNodeDisplay': sender_node_display
             })
         
         conn.close()
@@ -876,7 +906,8 @@ def onReceive(packet, interface):
                     board_id=BOARD_MESSAGE_CHANEL_NAME,
                     body=body,
                     bg_color='',
-                    author_key=''
+                    author_key='',
+                    lora_node_id=lora_uuid
                 ):
                     should_refresh = True
                     print(f"  -> 已儲存訊息，將在 60 秒後發送 USER ACK 命令")
@@ -894,7 +925,8 @@ def onReceive(packet, interface):
                         board_id=BOARD_MESSAGE_CHANEL_NAME,
                         body=body,
                         bg_color='',
-                        author_key=''
+                        author_key='',
+                        lora_node_id=lora_uuid
                     ):
                         should_refresh = True
                         print(f"[重發訊息寫入資料庫成功] lora_msg_id={resend_lora_msg_id}, body={body}")
@@ -1017,10 +1049,10 @@ def onReceive(packet, interface):
                     
                     cursor.execute('''
                         INSERT INTO notes (note_id, reply_lora_msg_id, board_id, body, bg_color, status, 
-                                         created_at, updated_at, author_key, rev, deleted, lora_msg_id, is_temp_parent_note)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
+                                         created_at, updated_at, author_key, rev, deleted, lora_msg_id, is_temp_parent_note, lora_node_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?)
                     ''', (reply_note_id, reply_lora_msg_id, BOARD_MESSAGE_CHANEL_NAME, body, '', status, 
-                          timestamp, timestamp, '', lora_msg_id, is_temp_parent))
+                          timestamp, timestamp, '', lora_msg_id, is_temp_parent, lora_uuid))
                     
                     conn.commit()
                     conn.close()
@@ -1067,10 +1099,10 @@ def onReceive(packet, interface):
                             
                             cursor.execute('''
                                 INSERT INTO notes (note_id, reply_lora_msg_id, board_id, body, bg_color, status, 
-                                                 created_at, updated_at, author_key, rev, deleted, lora_msg_id, is_temp_parent_note)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
+                                                 created_at, updated_at, author_key, rev, deleted, lora_msg_id, is_temp_parent_note, lora_node_id)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?)
                             ''', (reply_note_id, reply_lora_msg_id, BOARD_MESSAGE_CHANEL_NAME, body, '', status, 
-                                  timestamp, timestamp, '', resend_lora_msg_id, is_temp_parent))
+                                  timestamp, timestamp, '', resend_lora_msg_id, is_temp_parent, lora_uuid))
                             
                             conn.commit()
                             
@@ -2453,6 +2485,7 @@ def handle_connect():
 
 def run_noteboard_app():
     init_database()
+    migrate_database()
     socketio.start_background_task(target=mesh_loop)
     socketio.start_background_task(target=send_scheduler_loop)
     print(f"MeshBridge NoteBoard 伺服器啟動中 (Port 80, Channel: {BOARD_MESSAGE_CHANEL_NAME})...")
