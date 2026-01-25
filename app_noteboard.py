@@ -15,7 +15,10 @@ from flask import Flask, render_template, request, redirect, url_for, jsonify, m
 from flask_socketio import SocketIO, emit
 from meshtastic.serial_interface import SerialInterface
 from pubsub import pub
+import config
 from config import BOARD_MESSAGE_CHANEL_NAME, SEND_INTERVAL_SECOND, ACK_TIMEOUT_SECONDS, MAX_NOTE_SHOW, MAX_ARCHIVED_NOTE_SHOW, NOTEBOARD_ADMIN_PASSCODE
+NOTEBOARD_MBTILES_FOLDER = getattr(config, 'NOTEBOARD_MBTILES_FOLDER', './maps')
+NOTEBOARD_MBTILES_LAYER_MODE = getattr(config, 'NOTEBOARD_MBTILES_LAYER_MODE', 'auto')
 from app import get_power_status
 
 # 抑制 Meshtastic 的 protobuf 解析錯誤日誌（這些是暫時性錯誤，不影響功能）
@@ -1477,6 +1480,30 @@ def get_channel_name_config():
         'channel_name': BOARD_MESSAGE_CHANEL_NAME
     })
 
+@app.route('/api/config/features', methods=['GET'])
+def get_features_config():
+    """取得所有功能的啟用狀態"""
+    try:
+        # 檢查地圖功能是否啟用
+        map_enabled = False
+        if NOTEBOARD_MBTILES_FOLDER and os.path.exists(NOTEBOARD_MBTILES_FOLDER):
+            mbtiles_files = glob.glob(os.path.join(NOTEBOARD_MBTILES_FOLDER, '*.mbtiles'))
+            map_enabled = len(mbtiles_files) > 0
+        
+        return jsonify({
+            'success': True,
+            'features': {
+                'map_enabled': map_enabled,
+                'location_picker_enabled': map_enabled
+            }
+        })
+    except Exception as e:
+        print(f"取得功能配置失敗: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
 @app.route('/api/config/post_passcode_required', methods=['GET'])
 def get_post_passcode_required():
     """檢查是否需要張貼通關碼"""
@@ -2523,6 +2550,149 @@ def set_user_last_location(user_id):
             'error': str(e)
         }), 500
 
+@app.route('/api/available-tilesets')
+def get_available_tilesets():
+    """列出所有可用的 mbtiles 檔案並分析疊加策略"""
+    try:
+        maps_folder = NOTEBOARD_MBTILES_FOLDER
+        
+        # 檢查資料夾是否存在
+        if not maps_folder or not os.path.exists(maps_folder):
+            return jsonify({
+                'success': True,
+                'map_enabled': False,
+                'tilesets': [],
+                'layer_mode': 'none',
+                'message': 'Maps folder not configured or not found'
+            })
+        
+        tilesets = []
+        mbtiles_files = glob.glob(os.path.join(maps_folder, '*.mbtiles'))
+        
+        if not mbtiles_files:
+            return jsonify({
+                'success': True,
+                'map_enabled': False,
+                'tilesets': [],
+                'layer_mode': 'none',
+                'message': 'No mbtiles files found'
+            })
+        
+        # 讀取每個 mbtiles 檔案的 metadata
+        for mbtiles_path in sorted(mbtiles_files):
+            filename = os.path.basename(mbtiles_path)
+            tileset_name = filename[:-8]  # 移除 .mbtiles 副檔名
+            
+            try:
+                conn = sqlite3.connect(mbtiles_path)
+                cursor = conn.cursor()
+                cursor.execute('SELECT name, value FROM metadata')
+                metadata = dict(cursor.fetchall())
+                conn.close()
+                
+                # 解析 bounds
+                bounds_str = metadata.get('bounds', '-180,-85,180,85')
+                bounds = [float(b) for b in bounds_str.split(',')]
+                
+                # 取得 zoom 範圍
+                minzoom = int(metadata.get('minzoom', 0))
+                maxzoom = int(metadata.get('maxzoom', 14))
+                
+                # 判斷是 raster 還是 vector
+                tile_format = metadata.get('format', 'png')
+                tile_type = metadata.get('type', 'baselayer')
+                # pbf 是 vector tiles 格式，其他圖片格式才是 raster
+                is_raster = tile_format in ['png', 'jpg', 'jpeg', 'webp'] and tile_format != 'pbf'
+                
+                tileset_info = {
+                    'name': tileset_name,
+                    'display_name': metadata.get('name', tileset_name),
+                    'description': metadata.get('description', ''),
+                    'bounds': bounds,
+                    'minzoom': minzoom,
+                    'maxzoom': maxzoom,
+                    'format': tile_format,
+                    'type': tile_type,
+                    'is_raster': is_raster,
+                    'attribution': metadata.get('attribution', '')
+                }
+                
+                # Debug 輸出
+                #print(f"[DEBUG] 載入 tileset: {tileset_name}")
+                #print(f"  - display_name: {tileset_info['display_name']}")
+                #print(f"  - description: {tileset_info['description']}")
+                #print(f"  - bounds: {tileset_info['bounds']}")
+                #print(f"  - minzoom: {tileset_info['minzoom']}")
+                #print(f"  - maxzoom: {tileset_info['maxzoom']}")
+                #print(f"  - format: {tileset_info['format']}")
+                #print(f"  - type: {tileset_info['type']}")
+                #print(f"  - is_raster: {tileset_info['is_raster']}")
+                #print(f"  - attribution: {tileset_info['attribution']}")
+                
+                tilesets.append(tileset_info)
+            except Exception as e:
+                print(f"讀取 {filename} metadata 失敗: {e}")
+                # 即使讀取失敗，也加入基本資訊
+                tilesets.append({
+                    'name': tileset_name,
+                    'display_name': tileset_name,
+                    'description': '',
+                    'bounds': [-180, -85, 180, 85],
+                    'minzoom': 0,
+                    'maxzoom': 14,
+                    'format': 'png',
+                    'type': 'baselayer',
+                    'is_raster': True,
+                    'attribution': ''
+                })
+        
+        # 分析疊加策略
+        layer_mode = NOTEBOARD_MBTILES_LAYER_MODE
+        detected_mode = 'single'  # 預設為單一模式
+        
+        if len(tilesets) == 1:
+            # 只有一個 tileset，使用 single 模式
+            detected_mode = 'single'
+        elif len(tilesets) > 1 and layer_mode == 'auto':
+            # 自動判斷：檢查 zoom 範圍是否重疊
+            zoom_ranges = [(ts['minzoom'], ts['maxzoom']) for ts in tilesets]
+            
+            # 檢查是否有明顯的縮放層級分層（zoom 範圍不重疊或僅輕微重疊）
+            has_zoom_separation = False
+            for i in range(len(zoom_ranges) - 1):
+                for j in range(i + 1, len(zoom_ranges)):
+                    min1, max1 = zoom_ranges[i]
+                    min2, max2 = zoom_ranges[j]
+                    
+                    # 如果兩個範圍完全不重疊，或重疊少於 2 個層級
+                    overlap = min(max1, max2) - max(min1, min2)
+                    if overlap < 2:
+                        has_zoom_separation = True
+                        break
+                
+                if has_zoom_separation:
+                    break
+            
+            detected_mode = 'zoom-level' if has_zoom_separation else 'overlay'
+        elif layer_mode in ['overlay', 'zoom-level']:
+            detected_mode = layer_mode
+        
+        return jsonify({
+            'success': True,
+            'map_enabled': True,
+            'tilesets': tilesets,
+            'layer_mode': detected_mode,
+            'configured_mode': layer_mode
+        })
+        
+    except Exception as e:
+        print(f"取得可用 tilesets 失敗: {e}")
+        return jsonify({
+            'success': False,
+            'map_enabled': False,
+            'error': str(e)
+        }), 500
+
 @app.route('/tiles/<tileset>/<int:z>/<int:x>/<int:y>')
 def get_tile(tileset, z, x, y):
     """提供 MBTiles 的 tile 資料"""
@@ -2576,6 +2746,175 @@ def get_tile(tileset, z, x, y):
             'error': str(e)
         }), 500
 
+@app.route('/tiles/style.json')
+def get_multi_style():
+    """提供支援多個 mbtiles 疊加的 MapLibre style.json"""
+    try:
+        maps_folder = NOTEBOARD_MBTILES_FOLDER
+        
+        # 檢查資料夾是否存在
+        if not maps_folder or not os.path.exists(maps_folder):
+            return jsonify({
+                'success': False,
+                'error': 'Maps folder not configured or not found'
+            }), 404
+        
+        mbtiles_files = sorted(glob.glob(os.path.join(maps_folder, '*.mbtiles')))
+        
+        if not mbtiles_files:
+            return jsonify({
+                'success': False,
+                'error': 'No mbtiles files found'
+            }), 404
+        
+        # 讀取所有 mbtiles 的 metadata
+        tilesets_info = []
+        for mbtiles_path in mbtiles_files:
+            filename = os.path.basename(mbtiles_path)
+            tileset_name = filename[:-8]
+            
+            try:
+                conn = sqlite3.connect(mbtiles_path)
+                cursor = conn.cursor()
+                cursor.execute('SELECT name, value FROM metadata')
+                metadata = dict(cursor.fetchall())
+                conn.close()
+                
+                bounds_str = metadata.get('bounds', '-180,-85,180,85')
+                bounds = [float(b) for b in bounds_str.split(',')]
+                minzoom = int(metadata.get('minzoom', 0))
+                maxzoom = int(metadata.get('maxzoom', 14))
+                tile_format = metadata.get('format', 'png')
+                tile_type = metadata.get('type', 'baselayer')
+                # pbf 是 vector tiles 格式，其他圖片格式才是 raster
+                is_raster = tile_format in ['png', 'jpg', 'jpeg', 'webp'] and tile_format != 'pbf'
+                
+                tilesets_info.append({
+                    'name': tileset_name,
+                    'display_name': metadata.get('name', tileset_name),
+                    'bounds': bounds,
+                    'minzoom': minzoom,
+                    'maxzoom': maxzoom,
+                    'is_raster': is_raster,
+                    'format': tile_format,
+                    'type': tile_type
+                })
+            except Exception as e:
+                print(f"讀取 {filename} metadata 失敗: {e}")
+                continue
+        
+        if not tilesets_info:
+            return jsonify({
+                'success': False,
+                'error': 'Failed to read any mbtiles metadata'
+            }), 500
+        
+        # 判斷疊加模式
+        layer_mode = NOTEBOARD_MBTILES_LAYER_MODE
+        detected_mode = 'overlay'
+        
+        if len(tilesets_info) > 1 and layer_mode == 'auto':
+            zoom_ranges = [(ts['minzoom'], ts['maxzoom']) for ts in tilesets_info]
+            has_zoom_separation = False
+            
+            for i in range(len(zoom_ranges) - 1):
+                for j in range(i + 1, len(zoom_ranges)):
+                    min1, max1 = zoom_ranges[i]
+                    min2, max2 = zoom_ranges[j]
+                    overlap = min(max1, max2) - max(min1, min2)
+                    if overlap < 2:
+                        has_zoom_separation = True
+                        break
+                if has_zoom_separation:
+                    break
+            
+            detected_mode = 'zoom-level' if has_zoom_separation else 'overlay'
+        elif layer_mode in ['overlay', 'zoom-level']:
+            detected_mode = layer_mode
+        
+        # 建立 MapLibre style
+        host = request.host
+        style = {
+            "version": 8,
+            "name": "Multi-Tileset Map",
+            "sources": {},
+            "layers": []
+        }
+        
+        # 計算整體 bounds（取所有 tileset 的聯集）
+        all_bounds = [ts['bounds'] for ts in tilesets_info]
+        overall_bounds = [
+            min(b[0] for b in all_bounds),  # west
+            min(b[1] for b in all_bounds),  # south
+            max(b[2] for b in all_bounds),  # east
+            max(b[3] for b in all_bounds)   # north
+        ]
+        
+        # 根據模式建立 sources 和 layers
+        if detected_mode == 'zoom-level':
+            # 縮放層級模式：每個 tileset 在其 zoom 範圍內顯示
+            for idx, ts in enumerate(tilesets_info):
+                source_id = ts['name']
+                style['sources'][source_id] = {
+                    "type": "raster" if ts['is_raster'] else "vector",
+                    "tiles": [f"http://{host}/tiles/{ts['name']}/{{z}}/{{x}}/{{y}}"],
+                    "tileSize": 256 if ts['is_raster'] else None,
+                    "minzoom": ts['minzoom'],
+                    "maxzoom": ts['maxzoom'],
+                    "bounds": ts['bounds']
+                }
+                
+                if ts['is_raster']:
+                    style['layers'].append({
+                        "id": f"{source_id}-layer",
+                        "type": "raster",
+                        "source": source_id,
+                        "minzoom": ts['minzoom'],
+                        "maxzoom": ts['maxzoom'] + 1
+                    })
+                else:
+                    # Vector tiles 在縮放層級模式下，需要讀取實際的 layers
+                    # 暫時使用簡化處理，建議使用單一 vector tileset 或使用 /tiles/<tileset>/style.json
+                    print(f"[WARNING] Vector tiles '{source_id}' in zoom-level mode may need custom styling")
+        else:
+            # 疊加模式：所有 tileset 同時顯示（底層到上層）
+            for idx, ts in enumerate(tilesets_info):
+                source_id = ts['name']
+                style['sources'][source_id] = {
+                    "type": "raster" if ts['is_raster'] else "vector",
+                    "tiles": [f"http://{host}/tiles/{ts['name']}/{{z}}/{{x}}/{{y}}"],
+                    "tileSize": 256 if ts['is_raster'] else None,
+                    "minzoom": ts['minzoom'],
+                    "maxzoom": ts['maxzoom'],
+                    "bounds": ts['bounds']
+                }
+                
+                if ts['is_raster']:
+                    # 第一層不透明，後續層可以設定透明度
+                    opacity = 1.0 if idx == 0 else 0.7
+                    style['layers'].append({
+                        "id": f"{source_id}-layer",
+                        "type": "raster",
+                        "source": source_id,
+                        "paint": {
+                            "raster-opacity": opacity
+                        }
+                    })
+                else:
+                    # Vector tiles 在疊加模式下需要更複雜的處理
+                    print(f"[WARNING] Vector tiles '{source_id}' in overlay mode may need custom styling")
+        
+        response = make_response(jsonify(style))
+        response.headers['Content-Type'] = 'application/json'
+        return response
+        
+    except Exception as e:
+        print(f"取得 multi style.json 失敗: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
 @app.route('/tiles/<tileset>/style.json')
 def get_style(tileset):
     """提供 MapLibre style.json"""
@@ -2606,7 +2945,8 @@ def get_style(tileset):
         # 檢查是否為 raster tiles
         tile_format = metadata.get('format', 'png')
         tile_type = metadata.get('type', 'baselayer')
-        is_raster = tile_format in ['png', 'jpg', 'jpeg', 'webp'] or tile_type == 'baselayer'
+        # pbf 是 vector tiles 格式，其他圖片格式才是 raster
+        is_raster = tile_format in ['png', 'jpg', 'jpeg', 'webp'] and tile_format != 'pbf'
         
         conn.close()
         
@@ -2639,13 +2979,28 @@ def get_style(tileset):
             }
         else:
             # Vector tiles style
+            # 嘗試從 metadata 讀取 vector_layers 資訊
+            import json as json_module
+            vector_layers = []
+            
+            try:
+                if 'json' in metadata:
+                    tile_json = json_module.loads(metadata['json'])
+                    vector_layers = tile_json.get('vector_layers', [])
+            except Exception as e:
+                print(f"無法解析 vector_layers: {e}")
+            
+            # 建立基本 style
+            # 使用線上字體服務
+            host = request.host
             style = {
                 "version": 8,
                 "name": metadata.get('name', tileset),
+                "glyphs": "https://cdn.protomaps.com/fonts/pbf/{fontstack}/{range}.pbf",
                 "sources": {
                     tileset: {
                         "type": "vector",
-                        "tiles": [f"http://{{host}}/tiles/{tileset}/{{z}}/{{x}}/{{y}}"],
+                        "tiles": [f"http://{host}/tiles/{tileset}/{{z}}/{{x}}/{{y}}"],
                         "minzoom": minzoom,
                         "maxzoom": maxzoom,
                         "bounds": bounds
@@ -2658,7 +3013,292 @@ def get_style(tileset):
                         "paint": {
                             "background-color": "#f8f8f8"
                         }
-                    },
+                    }
+                ]
+            }
+            
+            # 根據實際的 vector_layers 生成 layer 定義
+            if vector_layers:
+                print(f"[DEBUG] Vector layers found: {[layer.get('id') for layer in vector_layers]}")
+                
+                # OpenMapTiles 標準 layers 的完整 style 定義
+                # 按照正確的渲染順序（從底層到上層）
+                
+                # 1. Water (水域) - 底層
+                if any(l.get('id') == 'water' for l in vector_layers):
+                    style['layers'].append({
+                        "id": "water",
+                        "type": "fill",
+                        "source": tileset,
+                        "source-layer": "water",
+                        "paint": {
+                            "fill-color": "#aad3df"
+                        }
+                    })
+                
+                # 2. Waterway (河流)
+                if any(l.get('id') == 'waterway' for l in vector_layers):
+                    style['layers'].append({
+                        "id": "waterway",
+                        "type": "line",
+                        "source": tileset,
+                        "source-layer": "waterway",
+                        "paint": {
+                            "line-color": "#aad3df",
+                            "line-width": 1
+                        }
+                    })
+                
+                # 3. Landcover (土地覆蓋 - 森林、草地等)
+                if any(l.get('id') == 'landcover' for l in vector_layers):
+                    style['layers'].append({
+                        "id": "landcover",
+                        "type": "fill",
+                        "source": tileset,
+                        "source-layer": "landcover",
+                        "paint": {
+                            "fill-color": "#d8e8c8",
+                            "fill-opacity": 0.5
+                        }
+                    })
+                
+                # 4. Landuse (土地使用)
+                if any(l.get('id') == 'landuse' for l in vector_layers):
+                    style['layers'].append({
+                        "id": "landuse",
+                        "type": "fill",
+                        "source": tileset,
+                        "source-layer": "landuse",
+                        "paint": {
+                            "fill-color": "#e0e0e0",
+                            "fill-opacity": 0.3
+                        }
+                    })
+                
+                # 5. Park (公園)
+                if any(l.get('id') == 'park' for l in vector_layers):
+                    style['layers'].append({
+                        "id": "park",
+                        "type": "fill",
+                        "source": tileset,
+                        "source-layer": "park",
+                        "paint": {
+                            "fill-color": "#c8e6c9",
+                            "fill-opacity": 0.6
+                        }
+                    })
+                
+                # 6. Boundary (邊界)
+                if any(l.get('id') == 'boundary' for l in vector_layers):
+                    style['layers'].append({
+                        "id": "boundary",
+                        "type": "line",
+                        "source": tileset,
+                        "source-layer": "boundary",
+                        "paint": {
+                            "line-color": "#9e9cab",
+                            "line-width": 1,
+                            "line-dasharray": [3, 3]
+                        }
+                    })
+                
+                # 7. Aeroway (機場跑道)
+                if any(l.get('id') == 'aeroway' for l in vector_layers):
+                    style['layers'].append({
+                        "id": "aeroway",
+                        "type": "fill",
+                        "source": tileset,
+                        "source-layer": "aeroway",
+                        "paint": {
+                            "fill-color": "#e9e9ed"
+                        }
+                    })
+                
+                # 8. Transportation (道路) - 多層渲染
+                if any(l.get('id') == 'transportation' for l in vector_layers):
+                    # 道路外框（較粗）
+                    style['layers'].append({
+                        "id": "transportation-case",
+                        "type": "line",
+                        "source": tileset,
+                        "source-layer": "transportation",
+                        "paint": {
+                            "line-color": "#e0e0e0",
+                            "line-width": {
+                                "stops": [[10, 2], [14, 6], [18, 12]]
+                            }
+                        }
+                    })
+                    # 道路內線（較細）
+                    style['layers'].append({
+                        "id": "transportation",
+                        "type": "line",
+                        "source": tileset,
+                        "source-layer": "transportation",
+                        "paint": {
+                            "line-color": "#ffffff",
+                            "line-width": {
+                                "stops": [[10, 1], [14, 4], [18, 10]]
+                            }
+                        }
+                    })
+                
+                # 9. Building (建築物)
+                if any(l.get('id') == 'building' for l in vector_layers):
+                    style['layers'].append({
+                        "id": "building",
+                        "type": "fill",
+                        "source": tileset,
+                        "source-layer": "building",
+                        "minzoom": 13,
+                        "paint": {
+                            "fill-color": "#d6d6d6",
+                            "fill-opacity": 0.7
+                        }
+                    })
+                
+                # 10. Water name (水域名稱)
+                if any(l.get('id') == 'water_name' for l in vector_layers):
+                    style['layers'].append({
+                        "id": "water_name",
+                        "type": "symbol",
+                        "source": tileset,
+                        "source-layer": "water_name",
+                        "layout": {
+                            "text-field": ["get", "name"],
+                            "text-font": ["Noto Sans Regular"],
+                            "text-size": 12
+                        },
+                        "paint": {
+                            "text-color": "#5a7a8f",
+                            "text-halo-color": "#ffffff",
+                            "text-halo-width": 1
+                        }
+                    })
+                
+                # 11. Transportation name (道路名稱)
+                if any(l.get('id') == 'transportation_name' for l in vector_layers):
+                    style['layers'].append({
+                        "id": "transportation_name",
+                        "type": "symbol",
+                        "source": tileset,
+                        "source-layer": "transportation_name",
+                        "layout": {
+                            "text-field": ["get", "name"],
+                            "text-font": ["Noto Sans Regular"],
+                            "text-size": 10,
+                            "symbol-placement": "line",
+                            "text-rotation-alignment": "map"
+                        },
+                        "paint": {
+                            "text-color": "#666666",
+                            "text-halo-color": "#ffffff",
+                            "text-halo-width": 1
+                        }
+                    })
+                
+                # 12. Place (地名)
+                if any(l.get('id') == 'place' for l in vector_layers):
+                    style['layers'].append({
+                        "id": "place",
+                        "type": "symbol",
+                        "source": tileset,
+                        "source-layer": "place",
+                        "layout": {
+                            "text-field": ["get", "name"],
+                            "text-font": ["Noto Sans Bold"],
+                            "text-size": {
+                                "stops": [[6, 10], [10, 14], [14, 18]]
+                            }
+                        },
+                        "paint": {
+                            "text-color": "#333333",
+                            "text-halo-color": "#ffffff",
+                            "text-halo-width": 1.5
+                        }
+                    })
+                
+                # 13. Housenumber (門牌號碼)
+                if any(l.get('id') == 'housenumber' for l in vector_layers):
+                    style['layers'].append({
+                        "id": "housenumber",
+                        "type": "symbol",
+                        "source": tileset,
+                        "source-layer": "housenumber",
+                        "minzoom": 17,
+                        "layout": {
+                            "text-field": ["get", "housenumber"],
+                            "text-font": ["Noto Sans Regular"],
+                            "text-size": 9
+                        },
+                        "paint": {
+                            "text-color": "#666666"
+                        }
+                    })
+                
+                # 14. POI (興趣點)
+                if any(l.get('id') == 'poi' for l in vector_layers):
+                    style['layers'].append({
+                        "id": "poi",
+                        "type": "symbol",
+                        "source": tileset,
+                        "source-layer": "poi",
+                        "minzoom": 14,
+                        "layout": {
+                            "text-field": ["get", "name"],
+                            "text-font": ["Noto Sans Regular"],
+                            "text-size": 10,
+                            "text-anchor": "top",
+                            "text-offset": [0, 0.5]
+                        },
+                        "paint": {
+                            "text-color": "#666666",
+                            "text-halo-color": "#ffffff",
+                            "text-halo-width": 1
+                        }
+                    })
+                
+                # 15. Aerodrome label (機場標籤)
+                if any(l.get('id') == 'aerodrome_label' for l in vector_layers):
+                    style['layers'].append({
+                        "id": "aerodrome_label",
+                        "type": "symbol",
+                        "source": tileset,
+                        "source-layer": "aerodrome_label",
+                        "layout": {
+                            "text-field": ["get", "name"],
+                            "text-font": ["Noto Sans Regular"],
+                            "text-size": 11
+                        },
+                        "paint": {
+                            "text-color": "#666666",
+                            "text-halo-color": "#ffffff",
+                            "text-halo-width": 1
+                        }
+                    })
+                
+                # 16. Mountain peak (山峰)
+                if any(l.get('id') == 'mountain_peak' for l in vector_layers):
+                    style['layers'].append({
+                        "id": "mountain_peak",
+                        "type": "symbol",
+                        "source": tileset,
+                        "source-layer": "mountain_peak",
+                        "layout": {
+                            "text-field": ["get", "name"],
+                            "text-font": ["Noto Sans Italic"],
+                            "text-size": 10
+                        },
+                        "paint": {
+                            "text-color": "#7a5c3d",
+                            "text-halo-color": "#ffffff",
+                            "text-halo-width": 1
+                        }
+                    })
+            else:
+                # 如果沒有 vector_layers 資訊，使用預設的 layer 定義
+                print(f"[WARNING] No vector_layers found in metadata, using default layers")
+                style['layers'].extend([
                     {
                         "id": "water",
                         "type": "fill",
@@ -2697,8 +3337,7 @@ def get_style(tileset):
                             "fill-opacity": 0.7
                         }
                     }
-                ]
-            }
+                ])
         
         # 替換 host placeholder
         host = request.host
@@ -2791,6 +3430,16 @@ def handle_connect():
 def run_noteboard_app():
     init_database()
     migrate_database()
+    
+    # 檢查地圖功能是否啟用
+    map_enabled = False
+    if NOTEBOARD_MBTILES_FOLDER and os.path.exists(NOTEBOARD_MBTILES_FOLDER):
+        mbtiles_files = glob.glob(os.path.join(NOTEBOARD_MBTILES_FOLDER, '*.mbtiles'))
+        map_enabled = len(mbtiles_files) > 0
+    
+    if not map_enabled:
+        print("mbtiles 目錄未設定或無檔案，離線地圖功能停用")
+    
     socketio.start_background_task(target=mesh_loop)
     socketio.start_background_task(target=send_scheduler_loop)
     print(f"MeshBridge NoteBoard 伺服器啟動中 (Port 80, Channel: {BOARD_MESSAGE_CHANEL_NAME})...")

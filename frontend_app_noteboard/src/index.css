@@ -1168,6 +1168,9 @@ header.header-hidden {
   flex-direction: column;
   gap: 10px;
   margin-bottom: 12px;
+  max-height: calc(3.5 * (28px + 24px + 10px));
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .location-item {
@@ -1530,6 +1533,10 @@ header.header-hidden {
 
   .location-picker-map {
     height: 300px !important;
+  }
+
+  .location-picker-modal .modal-body {
+    padding-bottom: 12px;
   }
 }
 

@@ -13,6 +13,7 @@
 - **顏色標記**：16 色調色盤，可為留言設定不同顏色以便分類
 - **權限控制**：基於 `author_key` 的權限驗證，僅作者可編輯/刪除自己的留言
 - **即時更新**：使用 WebSocket (Socket.IO) 實現即時同步
+- **離線地圖支援**：支援 MBTiles 格式的離線地圖，可在無網路環境下使用地圖功能
 
 ### 資料狀態
 
@@ -20,7 +21,97 @@
 2. **LoRa sent**：留言成功透過 LoRa 發送後，狀態更新為 `LoRa sent`
 3. **LoRa received**：從其他 LoRa 節點接收的留言
 
-## 2. 啟用方式
+## 2. 離線地圖安裝與設定
+
+NoteBoard 支援 MBTiles 格式的離線地圖，讓您在無網路環境下也能使用完整的地圖功能。
+
+### 2.1 下載離線地圖檔
+
+#### 台灣地區地圖
+
+台灣地區使用者可從**國土測繪圖資服務雲**網站，下載免費的政府開放資料：
+
+**地圖名稱**：[政府開放資料]臺灣通用電子地圖（套疊等高線）MBTiles 檔（APP 離線地圖用）
+
+**下載連結**：[https://maps.nlsc.gov.tw/MbIndex_qryPage.action?fun=8](https://maps.nlsc.gov.tw/MbIndex_qryPage.action?fun=8)
+
+#### 其他地區地圖
+
+如需使用其他地區的離線地圖，可從以下來源取得：
+- **OpenStreetMap**：使用開源工具（如 TileMill、Mapbox Studio）自行製作
+- **第三方地圖服務**：部分地圖服務提供商提供 MBTiles 格式下載
+
+### 2.2 安裝離線地圖
+
+1. **建立地圖資料夾**（如不存在）：
+   ```bash
+   mkdir -p MeshBridge/maps
+   ```
+
+2. **放置地圖檔案**：
+   將下載的 `.mbtiles` 檔案放入 `maps/` 資料夾中
+   ```
+   MeshBridge/
+   ├── maps/
+   │   ├── taiwan.mbtiles
+   │   └── other_region.mbtiles
+   ├── app.py
+   └── config.py
+   ```
+
+3. **系統自動載入**：
+   系統啟動時會自動識別並載入 `maps/` 資料夾中的所有 `.mbtiles` 檔案
+
+### 2.3 MBTiles 支援說明
+
+#### 多檔支援
+- ✅ **多地區支援**：可同時放置多個不同地區的 `.mbtiles` 檔案
+- ✅ **圖層套疊**：支援多個檔案針對同一地區進行圖層套疊（如：底圖 + 等高線 + 路網）
+
+#### 格式建議
+- **推薦格式**：Raster（點陣圖）格式
+- **原因**：Raster 格式的地圖完全自包含，不依賴網路字型，可確保在完全離線環境下正常顯示
+- **Vector 格式注意事項**：Vector（向量圖）格式的地圖可能使用網路字型渲染文字圖層，在離線環境下可能無法正常顯示文字標籤
+
+### 2.4 config.py 地圖相關設定
+
+系統會自動載入指定資料夾中的所有 `.mbtiles` 檔案。如需自訂設定，可在 `config.py` 中新增以下參數：
+
+```python
+# 地圖相關設定
+NOTEBOARD_MBTILES_FOLDER = "./maps"  # 地圖檔案路徑（預設值：./maps）
+NOTEBOARD_MBTILES_LAYER_MODE = "auto"  # 圖層模式（預設值：auto）
+```
+
+#### 參數說明
+
+**`NOTEBOARD_MBTILES_FOLDER`**
+- **類型**：字串
+- **預設值**：`"./maps"`
+- **說明**：指定 MBTiles 地圖檔案的存放資料夾路徑
+
+**`NOTEBOARD_MBTILES_LAYER_MODE`**
+- **類型**：字串
+- **預設值**：`"auto"`
+- **說明**：設定多個地圖檔案的圖層載入與顯示模式
+- **可選值**：
+  - `"auto"`：自動模式 - 系統根據地圖檔案的縮放層級範圍自動判斷使用 `overlay` 或 `zoom-level` 模式
+    - 若多個地圖檔案的縮放層級範圍重疊較多（≥2 個層級），使用 `overlay` 模式
+    - 若多個地圖檔案的縮放層級範圍重疊較少（<2 個層級）或不重疊，使用 `zoom-level` 模式
+  - `"overlay"`：疊加模式 - 所有地圖檔案同時顯示並疊加在一起（適用於底圖 + 等高線 + 路網等多圖層套疊）
+  - `"zoom-level"`：縮放層級模式 - 根據當前縮放層級自動切換顯示對應的地圖檔案（適用於不同精細度的地圖分層）
+- **範例**：
+  ```python
+  NOTEBOARD_MBTILES_LAYER_MODE = "auto"        # 自動判斷（推薦）
+  NOTEBOARD_MBTILES_LAYER_MODE = "overlay"     # 強制使用疊加模式
+  NOTEBOARD_MBTILES_LAYER_MODE = "zoom-level"  # 強制使用縮放層級模式
+  ```
+
+**注意事項**：
+- 如未在 `config.py` 中設定這些參數，系統將使用預設值
+- 修改設定後需重新啟動服務才會生效
+
+## 3. 啟用方式
 
 ### 切換至 NoteBoard 模式
 
@@ -87,11 +178,11 @@ docker compose down
 - **服務埠號**：Port 80 (HTTP)
 - **WebSocket**：自動連接至相同主機
 
-## 3. 使用者角色與權限管理
+## 4. 使用者角色與權限管理
 
 NoteBoard 提供兩種使用者角色：**一般使用者**與**管理者**，各自擁有不同的操作權限。
 
-### 3.1 角色說明
+### 4.1 角色說明
 
 #### 一般使用者
 
@@ -122,7 +213,7 @@ NoteBoard 提供兩種使用者角色：**一般使用者**與**管理者**，�
 - 管理者無法編輯他人便利貼的內容，僅能封存或變更顏色
 - 管理者身份為暫時性，登出後即恢復為一般使用者
 
-### 3.2 角色切換方式
+### 4.2 角色切換方式
 
 #### 切換至管理者身份
 
@@ -139,7 +230,7 @@ NoteBoard 提供兩種使用者角色：**一般使用者**與**管理者**，�
 3. 點擊「確定」完成登出
 4. 登出後，右上角標籤將恢復為「**一般用戶**」
 
-### 3.3 發送用通關碼（Post Passcode）
+### 4.3 發送用通關碼（Post Passcode）
 
 發送用通關碼為可選的安全機制，用於限制一般使用者發送便利貼與回覆的權限。啟用後，僅知道通關碼的使用者才能發送訊息，可有效防止未授權的訊息張貼。
 
@@ -183,7 +274,7 @@ NOTEBOARD_POST_PASSCODE = "1234"
 - 通關碼應與管理者密碼（`NOTEBOARD_ADMIN_PASSCODE`）設定為不同值
 - 僅將通關碼告知授權使用者，或是代為輸入，避免公開張貼
 
-### 3.4 權限對照表
+### 4.4 權限對照表
 
 | 操作項目 | 一般使用者 | 管理者 | 備註 |
 |---------|-----------|--------|------|
@@ -199,7 +290,7 @@ NOTEBOARD_POST_PASSCODE = "1234"
 | 重新發送自己的便利貼 | ✅ | ✅ | 僅限 LoRa sent 狀態 |
 | 免除發送通關碼 | ❌ | ✅ | 管理者發送訊息時無需輸入通關碼 |
 
-## 4. config.py 設定說明
+## 5. config.py 設定說明
 
 ### 設定檔位置
 ```
@@ -246,11 +337,11 @@ NOTEBOARD_POST_PASSCODE = "1234"  # 設定為 "" 可停用發送通關碼功能
 - **頻道名稱**：`BOARD_MESSAGE_CHANEL_NAME` 必須與 Meshtastic 裝置上設定的頻道名稱完全一致（區分大小寫）
 - **發送間隔**：`SEND_INTERVAL_SECOND` 建議設定在 30-180 秒之間，避免 LoRa 頻寬阻塞
 
-## 4. LoRa 指令說明
+## 6. LoRa 指令說明
 
 NoteBoard 使用特定格式的文字訊息在 Meshmatic LoRa 網路的Channel上傳輸，以下為各指令格式與用途。
 
-### 4.1 新增留言
+### 6.1 新增留言
 
 **格式**：`/msg [new]<留言內容>`
 
@@ -267,7 +358,7 @@ NoteBoard 使用特定格式的文字訊息在 Meshmatic LoRa 網路的Channel�
 
 ---
 
-### 4.2 重發留言
+### 6.2 重發留言
 
 **格式**：`/msg [<lora_msg_id>]<留言內容>`
 
@@ -284,7 +375,7 @@ NoteBoard 使用特定格式的文字訊息在 Meshmatic LoRa 網路的Channel�
 
 ---
 
-### 4.3 設定作者
+### 6.3 設定作者
 
 **格式**：`/author [<lora_msg_id>]<author_key>`
 
@@ -301,7 +392,7 @@ NoteBoard 使用特定格式的文字訊息在 Meshmatic LoRa 網路的Channel�
 
 ---
 
-### 4.4 設定顏色
+### 6.4 設定顏色
 
 **格式**：`/color [<lora_msg_id>]<author_key>, <color_index>`
 
@@ -323,7 +414,7 @@ NoteBoard 使用特定格式的文字訊息在 Meshmatic LoRa 網路的Channel�
 
 ---
 
-### 4.5 封存留言
+### 6.5 封存留言
 
 **格式**：`/archive [<lora_msg_id>]<author_key>`
 
@@ -341,7 +432,7 @@ NoteBoard 使用特定格式的文字訊息在 Meshmatic LoRa 網路的Channel�
 
 ---
 
-### 4.6 回覆留言
+### 6.6 回覆留言
 
 **格式**：`/reply <new>[<parent_lora_msg_id>]<留言內容>`
 
@@ -357,7 +448,7 @@ NoteBoard 使用特定格式的文字訊息在 Meshmatic LoRa 網路的Channel�
 - 如果父留言不存在於本地資料庫，系統會設定 `is_temp_parent_note=1`
 - 支援多層級回覆（回覆的回覆）
 
-### 4.7 重送回覆留言
+### 6.7 重送回覆留言
 
 **格式**：`/reply <lora_msg_id>[<parent_lora_msg_id>]<留言內容>`
 
@@ -371,7 +462,7 @@ NoteBoard 使用特定格式的文字訊息在 Meshmatic LoRa 網路的Channel�
 
 ---
 
-### 4.8 使用者 ACK 確認
+### 6.8 使用者 ACK 確認
 
 **格式**：`/ack <lora_msg_id>`
 
@@ -397,7 +488,7 @@ NoteBoard 使用特定格式的文字訊息在 Meshmatic LoRa 網路的Channel�
 4. **發送後續指令** → 自動發送 `/author` 和 `/color` 指令
 5. **其他節點接收** → 解析指令並同步至本地資料庫
 
-## 5. SQLite 資料庫欄位說明
+## 7. SQLite 資料庫欄位說明
 
 ### 資料庫檔案
 - **檔案名稱**：`noteboard.db`
@@ -500,11 +591,11 @@ NoteBoard 使用特定格式的文字訊息在 Meshmatic LoRa 網路的Channel�
 - 當留言的顏色或封存狀態變更時，設定為 1
 - 排程器會自動發送更新指令至 LoRa 網路
 
-## 6. RESTful API 說明
+## 8. RESTful API 說明
 
 所有 API 端點的 Base URL 為：`http://10.0.0.1` 或 `http://chat.meshbridge.com`
 
-### 6.1 取得使用者 UUID 
+### 8.1 取得使用者 UUID 
 
 **端點**：`GET /api/user/uuid`
 
@@ -520,7 +611,7 @@ NoteBoard 使用特定格式的文字訊息在 Meshmatic LoRa 網路的Channel�
 
 ---
 
-### 6.2 取得留言列表
+### 8.2 取得留言列表
 
 **端點**：`GET /api/boards/<board_id>/notes`
 
@@ -579,7 +670,7 @@ NoteBoard 使用特定格式的文字訊息在 Meshmatic LoRa 網路的Channel�
 
 ---
 
-### 6.3 建立新留言
+### 8.3 建立新留言
 
 **端點**：`POST /api/boards/<board_id>/notes`
 
@@ -617,7 +708,7 @@ NoteBoard 使用特定格式的文字訊息在 Meshmatic LoRa 網路的Channel�
 
 ---
 
-### 6.4 更新留言
+### 8.4 更新留言
 
 **端點**：`PUT /api/boards/<board_id>/notes/<note_id>`
 
@@ -655,7 +746,7 @@ NoteBoard 使用特定格式的文字訊息在 Meshmatic LoRa 網路的Channel�
 
 ---
 
-### 6.5 變更留言顏色
+### 8.5 變更留言顏色
 
 **端點**：`POST /api/boards/<board_id>/notes/<note_id>/color`
 
@@ -684,7 +775,7 @@ NoteBoard 使用特定格式的文字訊息在 Meshmatic LoRa 網路的Channel�
 
 ---
 
-### 6.6 封存留言
+### 8.6 封存留言
 
 **端點**：`POST /api/boards/<board_id>/notes/<note_id>/archive`
 
@@ -712,7 +803,7 @@ NoteBoard 使用特定格式的文字訊息在 Meshmatic LoRa 網路的Channel�
 
 ---
 
-### 6.7 刪除留言
+### 8.7 刪除留言
 
 **端點**：`DELETE /api/boards/<board_id>/notes/<note_id>`
 
@@ -784,7 +875,7 @@ NoteBoard 使用特定格式的文字訊息在 Meshmatic LoRa 網路的Channel�
 
 ---
 
-### 6.8 重新發送留言
+### 8.8 重新發送留言
 
 **端點**：`POST /api/boards/<board_id>/notes/<note_id>/resend`
 
@@ -829,7 +920,7 @@ NoteBoard 使用特定格式的文字訊息在 Meshmatic LoRa 網路的Channel�
 
 ---
 
-### 6.9 取得留言的 ACK 記錄
+### 8.9 取得留言的 ACK 記錄
 
 **端點**：`GET /api/boards/<board_id>/notes/<note_id>/acks`
 

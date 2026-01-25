@@ -1,12 +1,24 @@
 import { useEffect, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
+import mapInstanceManager from './MapInstanceManager'
+
+let pickerIdCounter = 0
+
+function isAndroid() {
+  const ua = navigator.userAgent.toLowerCase()
+  return /android/.test(ua)
+}
 
 function LocationPicker({ onConfirm, onCancel, initialLat = 25.0330, initialLng = 121.5654, initialText = '', lastLocation = null }) {
   const mapContainer = useRef(null)
   const map = useRef(null)
   const markers = useRef([])
+  const selectedIndexRef = useRef(0)
   const MAX_LOCATIONS = 5
+  const componentId = useRef(`location-picker-${++pickerIdCounter}`)
+  const isAndroidDevice = useRef(isAndroid())
+  const [canRenderMap, setCanRenderMap] = useState(!isAndroid())
 
   const parseLocationsFromText = (text) => {
     const locationRegex = /([\u4e00-\u9fa5a-zA-Z0-9_\-]+)?@\(([-+]?\d*\.?\d+)\s*,\s*([-+]?\d*\.?\d+)\)/g
@@ -56,35 +68,91 @@ function LocationPicker({ onConfirm, onCancel, initialLat = 25.0330, initialLng 
   const [locations, setLocations] = useState(getInitialLocations())
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [zoomLimits, setZoomLimits] = useState({ minZoom: 0, maxZoom: 22 })
+  const [mapEnabled, setMapEnabled] = useState(true)
+  const [mapConfig, setMapConfig] = useState(null)
 
   useEffect(() => {
-    const fetchZoomLimits = async () => {
+    selectedIndexRef.current = selectedIndex
+  }, [selectedIndex])
+
+  useEffect(() => {
+    const requestMapInstance = async () => {
+      // 非 Android 設備：直接允許渲染
+      if (!isAndroidDevice.current) {
+        setCanRenderMap(true)
+        return
+      }
+
+      // Android 設備：請求實例（最高優先級）
+      const result = await mapInstanceManager.requestInstance(componentId.current, 100)
+      setCanRenderMap(result.allowed)
+    }
+
+    requestMapInstance()
+
+    return () => {
+      // 只在 Android 設備上釋放實例
+      if (isAndroidDevice.current) {
+        mapInstanceManager.releaseInstance(componentId.current)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    const fetchMapConfig = async () => {
       try {
-        const response = await fetch('/tiles/taiwan/style.json')
-        const style = await response.json()
+        const response = await fetch('/api/available-tilesets')
+        const data = await response.json()
         
-        const firstSource = Object.values(style.sources)[0]
-        if (firstSource) {
-          const minZoom = firstSource.minzoom || 0
-          const maxZoom = firstSource.maxzoom || 22
-          setZoomLimits({ minZoom, maxZoom })
+        if (data.success && data.map_enabled) {
+          setMapEnabled(true)
+          setMapConfig(data)
+          
+          // 根據 layer_mode 決定使用哪個 style.json
+          let styleUrl = '/tiles/style.json'
+          if (data.layer_mode === 'single' && data.tilesets.length === 1) {
+            // 單一 tileset，使用專屬的 style.json（支援 vector tiles）
+            styleUrl = `/tiles/${data.tilesets[0].name}/style.json`
+          }
+          
+          const styleResponse = await fetch(styleUrl)
+          const style = await styleResponse.json()
+          
+          const firstSource = Object.values(style.sources)[0]
+          if (firstSource) {
+            const minZoom = firstSource.minzoom || 0
+            const maxZoom = firstSource.maxzoom || 22
+            setZoomLimits({ minZoom, maxZoom })
+          }
+        } else {
+          setMapEnabled(false)
+          console.log('Map disabled:', data.message)
         }
       } catch (error) {
-        console.error('Failed to fetch zoom limits:', error)
+        console.error('Failed to fetch map config:', error)
+        setMapEnabled(false)
       }
     }
     
-    fetchZoomLimits()
+    fetchMapConfig()
   }, [])
 
   useEffect(() => {
     if (map.current) return
+    if (!mapEnabled || !mapConfig) return
+    if (!canRenderMap) return
 
     const initialZoom = getInitialZoom()
 
+    // 根據 layer_mode 決定使用哪個 style.json
+    let styleUrl = '/tiles/style.json'
+    if (mapConfig.layer_mode === 'single' && mapConfig.tilesets.length === 1) {
+      styleUrl = `/tiles/${mapConfig.tilesets[0].name}/style.json`
+    }
+
     map.current = new maplibregl.Map({
       container: mapContainer.current,
-      style: '/tiles/taiwan/style.json',
+      style: styleUrl,
       center: [locations[0].lng, locations[0].lat],
       zoom: initialZoom,
       minZoom: zoomLimits.minZoom,
@@ -97,7 +165,7 @@ function LocationPicker({ onConfirm, onCancel, initialLat = 25.0330, initialLng 
 
     map.current.on('click', (e) => {
       const { lng, lat } = e.lngLat
-      updateLocation(selectedIndex, { lat, lng })
+      updateLocation(selectedIndexRef.current, { lat, lng })
     })
 
     map.current.addControl(
@@ -121,7 +189,7 @@ function LocationPicker({ onConfirm, onCancel, initialLat = 25.0330, initialLng 
         map.current = null
       }
     }
-  }, [zoomLimits])
+  }, [zoomLimits, canRenderMap])
 
   useEffect(() => {
     if (!map.current) return
@@ -219,6 +287,37 @@ function LocationPicker({ onConfirm, onCancel, initialLat = 25.0330, initialLng 
     onConfirm(coordinateString, mapState)
   }
 
+  if (!mapEnabled) {
+    return (
+      <div className="modal-overlay" onClick={onCancel}>
+        <div className="modal-content location-picker-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-header">選擇地圖座標</div>
+          <div className="modal-body">
+            <div style={{
+              width: '100%',
+              height: '400px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: '#f5f5f5',
+              borderRadius: '8px',
+              color: '#666',
+              fontSize: '14px',
+              marginBottom: '12px'
+            }}>
+              地圖功能未啟用（請設定 mbtiles 檔案）
+            </div>
+          </div>
+          <div className="modal-actions">
+            <button className="modal-btn modal-btn-cancel" onClick={onCancel}>
+              關閉
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="modal-overlay" onClick={onCancel}>
       <div className="modal-content location-picker-modal" onClick={(e) => e.stopPropagation()}>
@@ -227,17 +326,37 @@ function LocationPicker({ onConfirm, onCancel, initialLat = 25.0330, initialLng 
           <div className="location-picker-instructions">
             點擊地圖或拖曳標記來選擇位置 ({locations.length}/{MAX_LOCATIONS})
           </div>
-          <div 
-            ref={mapContainer}
-            className="location-picker-map"
-            style={{ 
-              width: '100%', 
-              height: '400px',
-              borderRadius: '8px',
-              overflow: 'hidden',
-              marginBottom: '12px'
-            }} 
-          />
+          {!canRenderMap ? (
+            <div
+              style={{
+                width: '100%',
+                height: '400px',
+                borderRadius: '8px',
+                overflow: 'hidden',
+                marginBottom: '12px',
+                backgroundColor: '#f0f0f0',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: '#666',
+                fontSize: '14px'
+              }}
+            >
+              正在載入地圖...
+            </div>
+          ) : (
+            <div 
+              ref={mapContainer}
+              className="location-picker-map"
+              style={{ 
+                width: '100%', 
+                height: '400px',
+                borderRadius: '8px',
+                overflow: 'hidden',
+                marginBottom: '12px'
+              }} 
+            />
+          )}
           <div className="location-list">
             {locations.map((location, index) => (
               <div 

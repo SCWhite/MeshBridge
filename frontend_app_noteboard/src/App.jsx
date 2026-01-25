@@ -106,6 +106,9 @@ function App() {
   const [replyPostPasscode, setReplyPostPasscode] = useState('')
   const [showLocationPicker, setShowLocationPicker] = useState(false)
   const [userLastLocations, setUserLastLocations] = useState({})
+  const [mapEnabled, setMapEnabled] = useState(false)
+  const [filterInputReadonly, setFilterInputReadonly] = useState(true)
+  const filterInputRef = useRef(null)
 
   useEffect(() => {
     const fetchUserLastLocation = async () => {
@@ -232,6 +235,16 @@ function App() {
         }
       } catch (error) {
         console.error('Failed to fetch post passcode config:', error)
+      }
+
+      try {
+        const featuresResponse = await fetch('/api/config/features')
+        const featuresData = await featuresResponse.json()
+        if (featuresData.success && featuresData.features) {
+          setMapEnabled(featuresData.features.map_enabled || false)
+        }
+      } catch (error) {
+        console.error('Failed to fetch features config:', error)
       }
 
       const newSocket = io()
@@ -1223,15 +1236,17 @@ function App() {
             placeholder="輸入內容..."
             autoFocus
           />
-          <div className="draft-tools">
-            <button 
-              className="btn-location-picker"
-              onClick={handleOpenLocationPicker}
-              title="地圖座標"
-            >
-              📍 地圖座標
-            </button>
-          </div>
+          {mapEnabled && (
+            <div className="draft-tools">
+              <button 
+                className="btn-location-picker"
+                onClick={handleOpenLocationPicker}
+                title="地圖座標"
+              >
+                📍 地圖座標
+              </button>
+            </div>
+          )}
           <div className="byte-counter-container">
             <div className="byte-counter-bar">
               <div 
@@ -1284,7 +1299,7 @@ function App() {
           </div>
         )}
         <div className="note-content">{highlightText(text, keywordFilter)}</div>
-        {parseLocationsFromText(text) && (
+        {mapEnabled && parseLocationsFromText(text) && (
           <div style={{ marginTop: '10px', marginBottom: '10px' }}>
             <LocationMap locations={parseLocationsFromText(text)} />
           </div>
@@ -1524,15 +1539,17 @@ function App() {
                 placeholder="輸入回覆內容..."
                 autoFocus
               />
-              <div className="draft-tools">
-                <button 
-                  className="btn-location-picker"
-                  onClick={handleOpenLocationPicker}
-                  title="加入地圖座標"
-                >
-                  📍 地圖座標
-                </button>
-              </div>
+              {mapEnabled && (
+                <div className="draft-tools">
+                  <button 
+                    className="btn-location-picker"
+                    onClick={handleOpenLocationPicker}
+                    title="加入地圖座標"
+                  >
+                    📍 地圖座標
+                  </button>
+                </div>
+              )}
               <div className="byte-counter-container">
                 <div className="byte-counter-bar">
                   <div 
@@ -1634,12 +1651,24 @@ function App() {
           <div className="filter-group">
             <label className="filter-label">關鍵字：</label>
             <input
+              ref={filterInputRef}
               type="text"
               className="filter-input"
               placeholder=""
               value={keywordFilter}
               onChange={(e) => setKeywordFilter(e.target.value)}
               disabled={isCreatingNote}
+              readOnly={filterInputReadonly}
+              onClick={() => {
+                if (filterInputReadonly) {
+                  setFilterInputReadonly(false)
+                  setTimeout(() => {
+                    if (filterInputRef.current) {
+                      filterInputRef.current.focus()
+                    }
+                  }, 0)
+                }
+              }}
             />
             {keywordFilter && (
               <button 
@@ -1688,15 +1717,17 @@ function App() {
                 placeholder="輸入內容..."
                 autoFocus
               />
-              <div className="draft-tools">
-                <button 
-                  className="btn-location-picker"
-                  onClick={handleOpenLocationPicker}
-                  title="加入地圖座標"
-                >
-                  📍 地圖座標
-                </button>
-              </div>
+              {mapEnabled && (
+                <div className="draft-tools">
+                  <button 
+                    className="btn-location-picker"
+                    onClick={handleOpenLocationPicker}
+                    title="加入地圖座標"
+                  >
+                    📍 地圖座標
+                  </button>
+                </div>
+              )}
               <div className="byte-counter-container">
                 <div className="byte-counter-bar">
                   <div 

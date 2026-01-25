@@ -1,35 +1,127 @@
 import { useEffect, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
+import mapInstanceManager from './MapInstanceManager'
+
+let componentIdCounter = 0
+
+function isAndroid() {
+  const ua = navigator.userAgent.toLowerCase()
+  return /android/.test(ua)
+}
 
 function LocationMap({ lat, lng, locations, zoom = 14 }) {
   const mapContainer = useRef(null)
   const map = useRef(null)
   const markers = useRef([])
   const [zoomLimits, setZoomLimits] = useState({ minZoom: 0, maxZoom: 22 })
+  const [mapEnabled, setMapEnabled] = useState(true)
+  const [mapConfig, setMapConfig] = useState(null)
+  const [isVisible, setIsVisible] = useState(!isAndroid())
+  const [canRenderMap, setCanRenderMap] = useState(!isAndroid())
+  const componentId = useRef(`location-map-${++componentIdCounter}`)
+  const observerRef = useRef(null)
+  const isAndroidDevice = useRef(isAndroid())
 
   useEffect(() => {
-    const fetchZoomLimits = async () => {
-      try {
-        const response = await fetch('/tiles/taiwan/style.json')
-        const style = await response.json()
-        
-        const firstSource = Object.values(style.sources)[0]
-        if (firstSource) {
-          const minZoom = firstSource.minzoom || 0
-          const maxZoom = firstSource.maxzoom || 22
-          setZoomLimits({ minZoom, maxZoom })
-        }
-      } catch (error) {
-        console.error('Failed to fetch zoom limits:', error)
+    // 非 Android 設備：跳過 Intersection Observer
+    if (!isAndroidDevice.current) return
+    if (!mapContainer.current) return
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          const visible = entry.isIntersecting
+          setIsVisible(visible)
+          
+          if (visible) {
+            mapInstanceManager.updatePriority(componentId.current, 10)
+          } else {
+            mapInstanceManager.updatePriority(componentId.current, 1)
+          }
+        })
+      },
+      {
+        root: null,
+        rootMargin: '50px',
+        threshold: 0.1
+      }
+    )
+
+    observer.observe(mapContainer.current)
+    observerRef.current = observer
+
+    return () => {
+      if (observerRef.current && mapContainer.current) {
+        observerRef.current.unobserve(mapContainer.current)
       }
     }
-    
-    fetchZoomLimits()
   }, [])
 
   useEffect(() => {
+    const fetchMapConfig = async () => {
+      try {
+        const response = await fetch('/api/available-tilesets')
+        const data = await response.json()
+        
+        if (data.success && data.map_enabled) {
+          setMapEnabled(true)
+          setMapConfig(data)
+          
+          // 根據 layer_mode 決定使用哪個 style.json
+          let styleUrl = '/tiles/style.json'
+          if (data.layer_mode === 'single' && data.tilesets.length === 1) {
+            // 單一 tileset，使用專屬的 style.json（支援 vector tiles）
+            styleUrl = `/tiles/${data.tilesets[0].name}/style.json`
+          }
+          
+          const styleResponse = await fetch(styleUrl)
+          const style = await styleResponse.json()
+          
+          const firstSource = Object.values(style.sources)[0]
+          if (firstSource) {
+            const minZoom = firstSource.minzoom || 0
+            const maxZoom = firstSource.maxzoom || 22
+            setZoomLimits({ minZoom, maxZoom })
+          }
+        } else {
+          setMapEnabled(false)
+          console.log('Map disabled:', data.message)
+        }
+      } catch (error) {
+        console.error('Failed to fetch map config:', error)
+        setMapEnabled(false)
+      }
+    }
+    
+    fetchMapConfig()
+  }, [])
+
+  useEffect(() => {
+    const requestMapInstance = async () => {
+      // 非 Android 設備：直接允許渲染
+      if (!isAndroidDevice.current) {
+        setCanRenderMap(true)
+        return
+      }
+
+      // Android 設備：檢查可見性並請求實例
+      if (!isVisible) {
+        setCanRenderMap(false)
+        return
+      }
+
+      const result = await mapInstanceManager.requestInstance(componentId.current, 10)
+      setCanRenderMap(result.allowed)
+    }
+
+    requestMapInstance()
+  }, [isVisible])
+
+  useEffect(() => {
     if (map.current) return
+    if (!mapEnabled || !mapConfig) return
+    if (!canRenderMap) return
 
     const locationsList = locations || (lat !== undefined && lng !== undefined ? [{ lat, lng }] : [])
     
@@ -37,9 +129,15 @@ function LocationMap({ lat, lng, locations, zoom = 14 }) {
 
     const firstLocation = locationsList[0]
     
+    // 根據 layer_mode 決定使用哪個 style.json
+    let styleUrl = '/tiles/style.json'
+    if (mapConfig.layer_mode === 'single' && mapConfig.tilesets.length === 1) {
+      styleUrl = `/tiles/${mapConfig.tilesets[0].name}/style.json`
+    }
+    
     map.current = new maplibregl.Map({
       container: mapContainer.current,
-      style: '/tiles/taiwan/style.json',
+      style: styleUrl,
       center: [firstLocation.lng, firstLocation.lat],
       zoom: zoom,
       minZoom: zoomLimits.minZoom,
@@ -115,12 +213,6 @@ function LocationMap({ lat, lng, locations, zoom = 14 }) {
       'top-right'
     )
 
-    map.current.on('zoom', () => {
-      console.log('Current zoom level:', map.current.getZoom())
-    })
-    
-    console.log('Map initialized with zoom:', zoom, 'minZoom:', zoomLimits.minZoom, 'maxZoom:', zoomLimits.maxZoom)
-
     return () => {
       markers.current.forEach(marker => marker.remove())
       markers.current = []
@@ -128,8 +220,13 @@ function LocationMap({ lat, lng, locations, zoom = 14 }) {
         map.current.remove()
         map.current = null
       }
+      // 只在 Android 設備上釋放實例
+      if (isAndroidDevice.current) {
+        mapInstanceManager.releaseInstance(componentId.current)
+        setCanRenderMap(false)
+      }
     }
-  }, [zoomLimits])
+  }, [zoomLimits, canRenderMap])
 
   useEffect(() => {
     if (!map.current) return
@@ -198,6 +295,62 @@ function LocationMap({ lat, lng, locations, zoom = 14 }) {
       map.current.fitBounds(bounds, { padding: 50, maxZoom: 15 })
     }
   }, [lat, lng, locations])
+
+  if (!mapEnabled) {
+    return (
+      <div style={{
+        width: '98%',
+        margin: '0 auto',
+        height: '240px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: '#f5f5f5',
+        borderRadius: '8px',
+        color: '#666',
+        fontSize: '14px'
+      }}>
+        地圖功能未啟用（請設定 mbtiles 檔案）
+      </div>
+    )
+  }
+
+  if (!canRenderMap) {
+    const locationsList = locations || (lat !== undefined && lng !== undefined ? [{ lat, lng }] : [])
+    const firstLocation = locationsList[0] || { lat: 0, lng: 0 }
+    
+    return (
+      <div 
+        ref={mapContainer}
+        style={{ 
+          width: '98%', 
+          margin: '0 auto',
+          boxShadow: '0 4px 8px rgba(0,0,0,0.2)',
+          height: '240px',
+          borderRadius: '8px',
+          overflow: 'hidden',
+          backgroundColor: '#e8e8e8',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexDirection: 'column',
+          color: '#666',
+          fontSize: '14px',
+          position: 'relative'
+        }}
+      >
+        <div style={{ marginBottom: '8px' }}>📍</div>
+        <div style={{ fontSize: '12px', opacity: 0.7 }}>
+          {firstLocation.lat.toFixed(4)}, {firstLocation.lng.toFixed(4)}
+        </div>
+        {!isVisible && (
+          <div style={{ fontSize: '11px', marginTop: '4px', opacity: 0.5 }}>
+            捲動至此處載入地圖
+          </div>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div 
