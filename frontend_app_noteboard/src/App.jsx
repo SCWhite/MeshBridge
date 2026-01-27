@@ -1780,7 +1780,7 @@ function App() {
 
       <footer className="app-footer">
         <div className="footer-left">uid={myUUID}</div>
-        <div className="footer-right">MeshNoteboard v0.3.0</div>
+        <div className="footer-right">MeshNoteboard v0.3.1</div>
       </footer>
 
       {modalConfig.show && (

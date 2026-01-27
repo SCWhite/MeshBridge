@@ -10,7 +10,7 @@ function isAndroid() {
   return /android/.test(ua)
 }
 
-function LocationPicker({ onConfirm, onCancel, initialLat = 25.0330, initialLng = 121.5654, initialText = '', lastLocation = null }) {
+function LocationPicker({ onConfirm, onCancel, initialLat: propInitialLat = 25.0330, initialLng: propInitialLng = 121.5654, initialText = '', lastLocation = null }) {
   const mapContainer = useRef(null)
   const map = useRef(null)
   const markers = useRef([])
@@ -19,6 +19,9 @@ function LocationPicker({ onConfirm, onCancel, initialLat = 25.0330, initialLng 
   const componentId = useRef(`location-picker-${++pickerIdCounter}`)
   const isAndroidDevice = useRef(isAndroid())
   const [canRenderMap, setCanRenderMap] = useState(!isAndroid())
+  const [initialLat, setInitialLat] = useState(propInitialLat)
+  const [initialLng, setInitialLng] = useState(propInitialLng)
+  const [isLoadingConfig, setIsLoadingConfig] = useState(true)
 
   const parseLocationsFromText = (text) => {
     const locationRegex = /([\u4e00-\u9fa5a-zA-Z0-9_\-]+)?@\(([-+]?\d*\.?\d+)\s*,\s*([-+]?\d*\.?\d+)\)/g
@@ -65,15 +68,85 @@ function LocationPicker({ onConfirm, onCancel, initialLat = 25.0330, initialLng 
     return 13
   }
 
-  const [locations, setLocations] = useState(getInitialLocations())
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [zoomLimits, setZoomLimits] = useState({ minZoom: 0, maxZoom: 22 })
   const [mapEnabled, setMapEnabled] = useState(true)
   const [mapConfig, setMapConfig] = useState(null)
+  const [locationsInitialized, setLocationsInitialized] = useState(false)
 
   useEffect(() => {
     selectedIndexRef.current = selectedIndex
   }, [selectedIndex])
+
+  useEffect(() => {
+    const fetchMapInitLocation = async () => {
+      try {
+        const response = await fetch('/api/config/map_init_location')
+        const data = await response.json()
+        
+        if (data.success) {
+          let lat = propInitialLat
+          let lng = propInitialLng
+          
+          // 優先順序 1: config 設定
+          if (data.config_location) {
+            lat = data.config_location.lat
+            lng = data.config_location.lng
+          }
+          // 優先順序 2: 設備位置（如果 config 不存在且設備有提供位置）
+          else if (data.is_device_provide_location && data.device_location) {
+            lat = data.device_location.lat
+            lng = data.device_location.lng
+          }
+          // 優先順序 3: 使用預設值（已經在 propInitialLat/propInitialLng 中）
+          
+          setInitialLat(lat)
+          setInitialLng(lng)
+        }
+      } catch (error) {
+        console.error('Failed to fetch map init location:', error)
+        // 發生錯誤時使用 prop 傳入的預設值
+        setInitialLat(propInitialLat)
+        setInitialLng(propInitialLng)
+      } finally {
+        setIsLoadingConfig(false)
+      }
+    }
+    
+    fetchMapInitLocation()
+  }, [propInitialLat, propInitialLng])
+
+  const [locations, setLocations] = useState(() => {
+    // 初始化時先使用 prop 的預設值
+    if (initialText) {
+      const parsedLocations = parseLocationsFromText(initialText)
+      if (parsedLocations.length > 0) {
+        return parsedLocations
+      }
+    }
+    if (lastLocation) {
+      return [{ lat: lastLocation.lat, lng: lastLocation.lng, label: '' }]
+    }
+    return [{ lat: propInitialLat, lng: propInitialLng, label: '' }]
+  })
+
+  useEffect(() => {
+    // 在配置載入完成後更新 locations（只執行一次）
+    if (!isLoadingConfig && !locationsInitialized) {
+      // 檢查是否有成功解析的座標
+      let hasValidParsedLocation = false
+      if (initialText) {
+        const parsedLocations = parseLocationsFromText(initialText)
+        hasValidParsedLocation = parsedLocations.length > 0
+      }
+      
+      // 只有在沒有 lastLocation 且沒有成功解析座標時，才使用配置的位置
+      if (!lastLocation && !hasValidParsedLocation) {
+        setLocations([{ lat: initialLat, lng: initialLng, label: '' }])
+      }
+      setLocationsInitialized(true)
+    }
+  }, [isLoadingConfig, initialLat, initialLng, initialText, lastLocation, locationsInitialized])
 
   useEffect(() => {
     const requestMapInstance = async () => {
@@ -141,6 +214,7 @@ function LocationPicker({ onConfirm, onCancel, initialLat = 25.0330, initialLng 
     if (map.current) return
     if (!mapEnabled || !mapConfig) return
     if (!canRenderMap) return
+    if (isLoadingConfig || locations.length === 0) return
 
     const initialZoom = getInitialZoom()
 
@@ -189,7 +263,7 @@ function LocationPicker({ onConfirm, onCancel, initialLat = 25.0330, initialLng 
         map.current = null
       }
     }
-  }, [zoomLimits, canRenderMap])
+  }, [zoomLimits, canRenderMap, mapEnabled, mapConfig, locationsInitialized])
 
   useEffect(() => {
     if (!map.current) return

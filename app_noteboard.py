@@ -99,6 +99,8 @@ lora_connected = False
 channel_validated = False
 pending_ack = {}
 send_interval = max(SEND_INTERVAL_SECOND, 10)
+deviceLastPosition = {'lat': 0.0, 'lng': 0.0}
+isDeviceProvideLocation = False
 
 DB_PATH = 'noteboard.db'
 MAX_NOTES = 200
@@ -1227,7 +1229,7 @@ def send_scheduler_loop():
                     if "Timed out waiting for connection completion" in error_str or \
                        "device disconnected" in error_str or \
                        "裝置路徑" in error_str and "已消失" in error_str:
-                        error_msg = "發送失敗：USB連線異常中斷，可能是 Pi 電力供應不足、更換線材、或 Mesh 裝置需要重啟"
+                        error_msg = "連線失敗：USB連線異常中斷，可能是 Pi 電力供應不足、更換線材、或 Mesh 裝置需要重啟"
                         print(f"[排程器] {error_msg}")
                         socketio.emit('usb_connection_error', {'message': error_msg})
                 
@@ -1283,7 +1285,7 @@ def send_scheduler_loop():
                 if "Timed out waiting for connection completion" in error_str or \
                    "device disconnected" in error_str or \
                    "裝置路徑" in error_str and "已消失" in error_str:
-                    error_msg = "發送失敗：USB連線異常中斷，可能是 Pi 電力供應不足、更換線材、或 Mesh 裝置需要重啟"
+                    error_msg = "連線失敗：USB連線異常中斷，可能是 Pi 電力供應不足、更換線材、或 Mesh 裝置需要重啟"
                     print(f"[排程器] {error_msg}")
                     socketio.emit('usb_connection_error', {'message': error_msg})
                 
@@ -1327,7 +1329,7 @@ def validate_channel_name(interface):
         return (False, error_msg)
 
 def mesh_loop():
-    global interface, current_dev_path, lora_connected, channel_validated
+    global interface, current_dev_path, lora_connected, channel_validated, deviceLastPosition, isDeviceProvideLocation
     print("啟動 Meshtastic 自動偵測與監聽 (NoteBoard 模式)...")
     
     while True:
@@ -1393,6 +1395,89 @@ def mesh_loop():
                             
                             print(f">>> 成功連線至 {target_port} <<<")
                             connection_success = True
+                            
+                            # 取得設備位置
+                            eventlet.sleep(3)
+                            try:
+                                lat = 0.0
+                                lng = 0.0
+                                
+                                if interface and interface.localNode:
+                                    # 取得本地節點的 nodeNum
+                                    local_node_num = interface.localNode.nodeNum
+                                    # 將 nodeNum 轉換成字串格式的節點 ID (例如: 1966063609 -> '!752fbff9')
+                                    local_node_id = f"!{local_node_num:08x}"
+                                    
+                                    # 檢查 interface.nodes 是否存在
+                                    if hasattr(interface, 'nodes'):
+                                        # 方法 1: 使用字串格式的節點 ID 查詢
+                                        if local_node_id in interface.nodes:
+                                            node_info = interface.nodes[local_node_id]
+                                            
+                                            # node_info 是字典，用字典方式存取
+                                            if isinstance(node_info, dict):
+                                                if 'position' in node_info:
+                                                    position = node_info['position']
+                                                    
+                                                    if position:
+                                                        # position 也可能是字典
+                                                        if isinstance(position, dict):
+                                                            if 'latitude' in position and 'longitude' in position:
+                                                                lat = position['latitude']
+                                                                lng = position['longitude']
+                                                        # 或是物件
+                                                        elif hasattr(position, 'latitude') and hasattr(position, 'longitude'):
+                                                            lat = position.latitude
+                                                            lng = position.longitude
+                                            # 如果是物件，用屬性方式存取
+                                            elif hasattr(node_info, 'position'):
+                                                position = node_info.position
+                                                if position and hasattr(position, 'latitude') and hasattr(position, 'longitude'):
+                                                    lat = position.latitude
+                                                    lng = position.longitude
+                                        # 方法 2: 嘗試使用數字格式的 nodeNum
+                                        elif local_node_num in interface.nodes:
+                                            node_info = interface.nodes[local_node_num]
+                                            
+                                            if hasattr(node_info, 'position') and node_info.position:
+                                                position = node_info.position
+                                                if hasattr(position, 'latitude') and hasattr(position, 'longitude'):
+                                                    lat = position.latitude
+                                                    lng = position.longitude
+                                    
+                                    # 方法 3: 從 interface.nodesByNum 取得
+                                    if (lat == 0 and lng == 0) and hasattr(interface, 'nodesByNum'):
+                                        if local_node_num in interface.nodesByNum:
+                                            node_info = interface.nodesByNum[local_node_num]
+                                            if hasattr(node_info, 'position') and node_info.position:
+                                                position = node_info.position
+                                                if hasattr(position, 'latitude') and hasattr(position, 'longitude'):
+                                                    lat = position.latitude
+                                                    lng = position.longitude
+                                    
+                                    if lat != 0 or lng != 0:
+                                        deviceLastPosition['lat'] = lat
+                                        deviceLastPosition['lng'] = lng
+                                        isDeviceProvideLocation = True
+                                        print(f"[設備位置] 成功取得位置: lat={lat}, lng={lng}")
+                                    else:
+                                        deviceLastPosition['lat'] = 0.0
+                                        deviceLastPosition['lng'] = 0.0
+                                        isDeviceProvideLocation = False
+                                        print(f"[設備位置] 設備位置為 (0, 0)，可能尚未設定位置")
+                                else:
+                                    deviceLastPosition['lat'] = 0.0
+                                    deviceLastPosition['lng'] = 0.0
+                                    isDeviceProvideLocation = False
+                                    print(f"[設備位置] Interface 或 localNode 不可用，設為 (0, 0)")
+                            except Exception as e:
+                                deviceLastPosition['lat'] = 0.0
+                                deviceLastPosition['lng'] = 0.0
+                                isDeviceProvideLocation = False
+                                print(f"[設備位置] 取得位置時發生錯誤: {e}，設為 (0, 0)")
+                                import traceback
+                                traceback.print_exc()
+                            
                             break
                             
                         except Exception as conn_error:
@@ -1463,7 +1548,7 @@ def mesh_loop():
                 
                 # 檢測 USB 連線異常，通知前端
                 if "裝置路徑" in error_str and "已消失" in error_str:
-                    error_msg = "發送失敗：USB連線異常中斷，可能是 Pi 電力供應不足、更換線材、或 Mesh 裝置需要重啟"
+                    error_msg = "連線失敗：USB連線異常中斷，可能是 Pi 電力供應不足、更換線材、或 Mesh 裝置需要重啟"
                     print(f"[mesh_loop] {error_msg}")
                     socketio.emit('usb_connection_error', {'message': error_msg})
             
@@ -1511,6 +1596,40 @@ def get_post_passcode_required():
         'success': True,
         'required': bool(NOTEBOARD_POST_PASSCODE and NOTEBOARD_POST_PASSCODE.strip())
     })
+
+@app.route('/api/config/map_init_location', methods=['GET'])
+def get_map_init_location():
+    """取得地圖初始位置配置"""
+    global deviceLastPosition, isDeviceProvideLocation
+    
+    try:
+        # 從 config 讀取 NOTEBOARD_MAP_INIT_LOCATION
+        config_location = None
+        try:
+            from config import NOTEBOARD_MAP_INIT_LOCATION
+            if NOTEBOARD_MAP_INIT_LOCATION:
+                # 解析格式: "25.013799,121.464188"
+                parts = NOTEBOARD_MAP_INIT_LOCATION.split(',')
+                if len(parts) == 2:
+                    lat = float(parts[0].strip())
+                    lng = float(parts[1].strip())
+                    config_location = {'lat': lat, 'lng': lng}
+        except (ImportError, ValueError, AttributeError):
+            pass
+        
+        return jsonify({
+            'success': True,
+            'config_location': config_location,
+            'device_location': deviceLastPosition if isDeviceProvideLocation else None,
+            'is_device_provide_location': isDeviceProvideLocation,
+            'default_location': {'lat': 25.0330, 'lng': 121.5654}
+        })
+    except Exception as e:
+        print(f"取得地圖初始位置配置失敗: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 @app.route('/api/user/uuid', methods=['GET'])
 def get_user_uuid():

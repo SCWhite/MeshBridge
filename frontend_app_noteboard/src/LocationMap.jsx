@@ -10,6 +10,17 @@ function isAndroid() {
   return /android/.test(ua)
 }
 
+function isIOSSafari() {
+  const ua = navigator.userAgent.toLowerCase()
+  const isIOS = /iphone|ipad|ipod/.test(ua)
+  const isSafari = /safari/.test(ua) && !/chrome|crios|fxios|edgios/.test(ua)
+  return isIOS && isSafari
+}
+
+function needsWebGLControl() {
+  return isAndroid() || isIOSSafari()
+}
+
 function LocationMap({ lat, lng, locations, zoom = 14 }) {
   const mapContainer = useRef(null)
   const map = useRef(null)
@@ -17,15 +28,15 @@ function LocationMap({ lat, lng, locations, zoom = 14 }) {
   const [zoomLimits, setZoomLimits] = useState({ minZoom: 0, maxZoom: 22 })
   const [mapEnabled, setMapEnabled] = useState(true)
   const [mapConfig, setMapConfig] = useState(null)
-  const [isVisible, setIsVisible] = useState(!isAndroid())
-  const [canRenderMap, setCanRenderMap] = useState(!isAndroid())
+  const [isVisible, setIsVisible] = useState(!needsWebGLControl())
+  const [canRenderMap, setCanRenderMap] = useState(!needsWebGLControl())
   const componentId = useRef(`location-map-${++componentIdCounter}`)
   const observerRef = useRef(null)
-  const isAndroidDevice = useRef(isAndroid())
+  const needsControl = useRef(needsWebGLControl())
 
   useEffect(() => {
-    // 非 Android 設備：跳過 Intersection Observer
-    if (!isAndroidDevice.current) return
+    // 不需要 WebGL 控制的設備：跳過 Intersection Observer
+    if (!needsControl.current) return
     if (!mapContainer.current) return
 
     const observer = new IntersectionObserver(
@@ -99,13 +110,13 @@ function LocationMap({ lat, lng, locations, zoom = 14 }) {
 
   useEffect(() => {
     const requestMapInstance = async () => {
-      // 非 Android 設備：直接允許渲染
-      if (!isAndroidDevice.current) {
+      // 不需要 WebGL 控制的設備：直接允許渲染
+      if (!needsControl.current) {
         setCanRenderMap(true)
         return
       }
 
-      // Android 設備：檢查可見性並請求實例
+      // 需要 WebGL 控制的設備（Android Chrome / iOS Safari）：檢查可見性並請求實例
       if (!isVisible) {
         setCanRenderMap(false)
         return
@@ -220,8 +231,8 @@ function LocationMap({ lat, lng, locations, zoom = 14 }) {
         map.current.remove()
         map.current = null
       }
-      // 只在 Android 設備上釋放實例
-      if (isAndroidDevice.current) {
+      // 只在需要 WebGL 控制的設備上釋放實例
+      if (needsControl.current) {
         mapInstanceManager.releaseInstance(componentId.current)
         setCanRenderMap(false)
       }
