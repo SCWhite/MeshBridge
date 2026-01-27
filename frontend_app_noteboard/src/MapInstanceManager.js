@@ -3,26 +3,37 @@ function isAndroid() {
   return /android/.test(ua)
 }
 
+function isIOSSafari() {
+  const ua = navigator.userAgent.toLowerCase()
+  const isIOS = /iphone|ipad|ipod/.test(ua)
+  const isSafari = /safari/.test(ua) && !/chrome|crios|fxios|edgios/.test(ua)
+  return isIOS && isSafari
+}
+
+function needsWebGLControl() {
+  return isAndroid() || isIOSSafari()
+}
+
 class MapInstanceManager {
   constructor(maxInstances = 3) {
     this.maxInstances = maxInstances
     this.activeInstances = new Map()
     this.pendingQueue = []
     this.instanceCounter = 0
-    this.isAndroidDevice = isAndroid()
+    this.needsControl = needsWebGLControl()
   }
 
   requestInstance(componentId, priority = 0) {
     return new Promise((resolve) => {
-      // 非 Android 設備：直接允許所有地圖實例
-      if (!this.isAndroidDevice) {
+      // 不需要 WebGL 控制的設備：直接允許所有地圖實例
+      if (!this.needsControl) {
         const instanceId = ++this.instanceCounter
         this.activeInstances.set(componentId, { instanceId, priority })
         resolve({ allowed: true, instanceId })
         return
       }
 
-      // Android 設備：應用實例限制
+      // 需要 WebGL 控制的設備（Android Chrome / iOS Safari）：應用實例限制
       if (this.activeInstances.size < this.maxInstances) {
         const instanceId = ++this.instanceCounter
         this.activeInstances.set(componentId, { instanceId, priority })
