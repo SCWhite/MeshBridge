@@ -11,7 +11,7 @@ import re
 import subprocess
 import logging
 from datetime import datetime, timedelta
-from flask import Flask, render_template, request, redirect, url_for, jsonify, make_response, session
+from flask import Flask, render_template, request, redirect, url_for, jsonify, make_response, session, send_file
 from flask_socketio import SocketIO, emit
 from meshtastic.serial_interface import SerialInterface
 from pubsub import pub
@@ -24,7 +24,17 @@ print(f"[系統] 使用多頻道設定: {[ch['name'] for ch in BOARD_MESSAGE_CHA
 CONFIGURED_CHANNEL_NAMES = [ch['name'] for ch in BOARD_MESSAGE_CHANNELS]
 NOTEBOARD_MBTILES_FOLDER = getattr(config, 'NOTEBOARD_MBTILES_FOLDER', './maps')
 NOTEBOARD_MBTILES_LAYER_MODE = getattr(config, 'NOTEBOARD_MBTILES_LAYER_MODE', 'auto')
+APP_VERSION = "v0.6.0"
+APP_PROJECT_NAME = "meshBridge/meshNoteboard"
+NOTEBOARD_SERVICE_NAME = getattr(
+    config,
+    'NOTEBOARD_SERVICE_NAME',
+    getattr(config, 'BOARD_SERVICE_NAME', 'Mesh資訊站')
+)
+EPAPER_CONNECT_NOTE = getattr(config, 'EPAPER_CONNECT_NOTE', '即可檢視更多訊息。')
+REAUTH_ON_CHANNEL_SWITCH = getattr(config, 'REAUTH_ON_CHANNEL_SWITCH', False)
 from app import get_power_status
+from app_noteboard_epaper import update_epaper_display, start_epaper_periodic_refresh, clear_epaper_display, get_current_photo_path
 
 # 抑制 Meshtastic 的 protobuf 解析錯誤日誌（這些是暫時性錯誤，不影響功能）
 logging.getLogger('meshtastic.mesh_interface').setLevel(logging.CRITICAL)
@@ -162,6 +172,42 @@ COLOR_PALETTE = [
     'hsl(15, 80%, 85%)'      # 15: Coral
 ]
 
+def _build_epaper_default_profile():
+    """從 config.EPAPER_DISPLAY_MODE 解析預設的 layout 與 canvas"""
+    display_mode = getattr(config, 'EPAPER_DISPLAY_MODE', 'standard_qr,w7')
+    device_id = getattr(config, 'EPAPER_MODULE_ID', '')
+    from app_noteboard_epaper import DEVICE_COLOR_MODE_MAPPING
+    color_mode = DEVICE_COLOR_MODE_MAPPING.get(device_id, {}).get('color_mode', 'mono')
+    layout, canvas = 'standard_qr', 'w7'
+    if ',' in display_mode:
+        parts = display_mode.split(',', 1)
+        layout = parts[0].strip()
+        canvas = parts[1].strip()
+    return {'color_mode': color_mode, 'layout': layout, 'canvas': canvas}
+
+EPAPER_DEFAULT_PROFILE = _build_epaper_default_profile()
+
+EPAPER_SUPPORTED_OPTIONS = {
+    'color_mode': {'mono', 'full_color', 'dual_rb'},
+    'layout': {'standard_qr', 'photo_qr'},
+    'canvas': {'w7', 'p7'}
+}
+
+EPAPER_CANVAS_SPECS = {
+    'w7': {
+        'width': 800,
+        'height': 480,
+        'orientation': 'landscape',
+        'max_notes': 3
+    },
+    'p7': {
+        'width': 480,
+        'height': 800,
+        'orientation': 'portrait',
+        'max_notes': 3
+    }
+}
+
 def init_database():
     """初始化 SQLite 資料庫"""
     conn = sqlite3.connect(DB_PATH)
@@ -290,6 +336,42 @@ def mac_from_ip(ip: str, iface: str = "wlan0") -> str | None:
     except Exception as e:
         print(f"Error getting MAC from IP {ip}: {e}")
         return None
+
+def get_current_wifi_ssid():
+    """
+    參考 setup_wifi.sh：
+    1) 由 wlan0 MAC 推導 TARGET_SSID (MeshBridge_XXXX)
+    2) 讀取 MeshBridge-Hotspot 目前設定的 SSID
+    3) 優先回傳目前設定值，失敗時回傳 TARGET_SSID，再失敗回傳預設值
+    """
+    default_ssid = "MeshBridge_8944"
+    target_ssid = default_ssid
+
+    try:
+        with open('/sys/class/net/wlan0/address', 'r', encoding='utf-8') as fp:
+            raw_mac = fp.read().strip()
+        sanitized = raw_mac.replace(':', '').upper()
+        if len(sanitized) >= 4:
+            suffix = sanitized[-4:]
+            target_ssid = f"MeshBridge_{suffix}"
+    except Exception as e:
+        print(f"[WiFi] 讀取 wlan0 MAC 失敗，使用預設 SSID: {e}")
+
+    try:
+        result = subprocess.run(
+            ["nmcli", "-g", "802-11-wireless.ssid", "connection", "show", "MeshBridge-Hotspot"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False
+        )
+        current_ssid = result.stdout.strip()
+        if result.returncode == 0 and current_ssid:
+            return current_ssid
+    except Exception as e:
+        print(f"[WiFi] 讀取 MeshBridge-Hotspot SSID 失敗，改用 TARGET_SSID: {e}")
+
+    return target_ssid
 
 def get_or_create_user_uuid():
     """從 session/cookie 取得或建立用戶 UUID"""
@@ -900,6 +982,7 @@ def onReceive(packet, interface):
                         print(f"  -> 更新 lora_msg_id 失敗: {e}")
                     
                     socketio.emit('refresh_notes', {'board_id': note_info.get('board_id', BOARD_MESSAGE_CHANNELS[0]['name'])})
+                    update_epaper_display()
                 
                 del pending_ack[request_id]
         
@@ -1378,6 +1461,7 @@ def onReceive(packet, interface):
             
             if should_refresh:
                 socketio.emit('refresh_notes', {'board_id': channel_name})
+                update_epaper_display()
                 
     except Exception as e:
         print(f"Packet Error: {e}")
@@ -1417,6 +1501,7 @@ def check_ack_timeout():
         if update_note_status(note_id, 'LAN only'):
             print(f"  -> 更新 note {note_id} 狀態為 'LAN only'")
             socketio.emit('refresh_notes', {'board_id': info.get('board_id', BOARD_MESSAGE_CHANNELS[0]['name'])})
+            update_epaper_display()
         
         del pending_ack[request_id]
 
@@ -1469,6 +1554,7 @@ def send_scheduler_loop():
                         interface.sendText(msg, channelIndex=channel_index)
                         print(f"  -> 已發送更新命令")
                         socketio.emit('refresh_notes', {'board_id': ch_name})
+                        update_epaper_display()
                         
                     except Exception as e:
                         error_str = str(e)
@@ -1486,6 +1572,7 @@ def send_scheduler_loop():
                             FLAG_DEVICE_WAITING_ACK = False
                             socketio.emit('usb_connection_error', {'message': error_msg})
                             socketio.emit('lora_status', {'online': False, 'channel_validated': False, 'error_message': None, 'power_issue': False})
+                            update_epaper_display()
                     
                     continue
                 
@@ -1531,6 +1618,7 @@ def send_scheduler_loop():
                             update_note_status(note['note_id'], 'Sending')
                             print(f"  -> 已發送訊息，等待 ACK (request_id={request_id})")
                             socketio.emit('refresh_notes', {'board_id': ch_name})
+                            update_epaper_display()
                             FLAG_DEVICE_WAITING_ACK = True
                         else:
                             print(f"  -> 已發送訊息，但無 request_id")
@@ -1553,6 +1641,7 @@ def send_scheduler_loop():
                         FLAG_DEVICE_WAITING_ACK = False
                         socketio.emit('usb_connection_error', {'message': error_msg})
                         socketio.emit('lora_status', {'online': False, 'channel_validated': False, 'error_message': None, 'power_issue': False})
+                        update_epaper_display()
                 
         except Exception as e:
             error_str = str(e)
@@ -1569,10 +1658,11 @@ def validate_channel_name(interface):
             channel_validated = False
             return (False, f"無法讀取裝置 channel 資訊")
         
-        # 取得設備上的所有 channel 名稱（排除 index 0）
+        # 取得設備上的所有 channel 名稱（排除 index 0，且必須為啟用狀態）
+        # ch.role: 0=DISABLED, 1=PRIMARY, 2=SECONDARY
         device_channels = {}
         for ch in interface.localNode.channels:
-            if ch.settings and ch.index != 0:
+            if ch.settings and ch.index != 0 and ch.role != 0:
                 device_channels[ch.settings.name] = ch.index
         
         # 逐個檢查設定中的頻道，是否存在於設備上
@@ -1604,7 +1694,8 @@ def validate_channel_name(interface):
             print(f"[✗] 設備上可用的 channels:")
             for ch in interface.localNode.channels:
                 if ch.settings:
-                    print(f"    - Index {ch.index}: {ch.settings.name}")
+                    role_str = {0: 'DISABLED', 1: 'PRIMARY', 2: 'SECONDARY'}.get(ch.role, f'UNKNOWN({ch.role})')
+                    print(f"    - Index {ch.index}: '{ch.settings.name}' (role={role_str})")
             return (False, error_msg)
     except Exception as e:
         error_msg = f"Channel 驗證異常: {e}"
@@ -1625,6 +1716,7 @@ def mesh_loop():
                     channel_validated = False
                     active_channels = []
                     socketio.emit('lora_status', {'online': False, 'channel_validated': False, 'error_message': None, 'power_issue': False, 'active_channels': []})
+                    update_epaper_display()
                 
                 target_port = scan_for_meshtastic()
                 if target_port:
@@ -1641,6 +1733,7 @@ def mesh_loop():
                             'error_message': None,
                             'power_issue': True
                         })
+                        update_epaper_display()
                         time.sleep(5)
                         continue
                     else:
@@ -1802,6 +1895,7 @@ def mesh_loop():
                         'power_issue': False,
                         'active_channels': [ch['name'] for ch in active_channels]
                     })
+                    update_epaper_display()
                 else:
                     time.sleep(3)
 
@@ -1820,6 +1914,7 @@ def mesh_loop():
                         'power_issue': False,
                         'active_channels': [ch['name'] for ch in active_channels]
                     })
+                    update_epaper_display()
 
         except Exception as e:
             error_str = str(e)
@@ -1836,6 +1931,7 @@ def mesh_loop():
                 channel_validated = False
                 active_channels = []
                 socketio.emit('lora_status', {'online': False, 'channel_validated': False, 'error_message': None, 'power_issue': False, 'active_channels': []})
+                update_epaper_display()
                 
                 # 檢測 USB 連線異常，通知前端
                 if "裝置路徑" in error_str and "已消失" in error_str:
@@ -1878,7 +1974,8 @@ def get_features_config():
             'success': True,
             'features': {
                 'map_enabled': map_enabled,
-                'location_picker_enabled': map_enabled
+                'location_picker_enabled': map_enabled,
+                'reauth_on_channel_switch': REAUTH_ON_CHANNEL_SWITCH
             }
         })
     except Exception as e:
@@ -1936,6 +2033,21 @@ def select_board():
     if board_id not in CONFIGURED_CHANNEL_NAMES:
         return jsonify({'success': False, 'error': 'Invalid board_id'}), 400
     
+    # 若啟用 REAUTH_ON_CHANNEL_SWITCH，切換頻道時清除舊頻道的認證狀態
+    if REAUTH_ON_CHANNEL_SWITCH:
+        old_board = get_session_value('selected_board', None)
+        if old_board and old_board != board_id:
+            # 清除舊頻道的 user_passcode 認證
+            verified = list(get_session_value('verified_channels', []))
+            if old_board in verified:
+                verified.remove(old_board)
+                set_session_value('verified_channels', verified)
+            # 清除舊頻道的 admin 認證
+            admin_chs = list(get_session_value('admin_channels', []))
+            if old_board in admin_chs:
+                admin_chs.remove(old_board)
+                set_session_value('admin_channels', admin_chs)
+
     set_session_value('selected_board', board_id)
     return jsonify({'success': True, 'board_id': board_id})
 
@@ -2461,6 +2573,7 @@ def create_board_note(board_id):
         }
         
         socketio.emit('refresh_notes', {'board_id': board_id})
+        update_epaper_display()
         
         return jsonify({
             'success': True,
@@ -2540,6 +2653,7 @@ def update_board_note(board_id, note_id):
         conn.close()
         
         socketio.emit('refresh_notes', {'board_id': board_id})
+        update_epaper_display()
         
         return jsonify({
             'success': True,
@@ -2619,6 +2733,7 @@ def archive_board_note(board_id, note_id):
         
         if archive_note(note_id, db_author_key, need_lora_update=True):
             socketio.emit('refresh_notes', {'board_id': board_id})
+            update_epaper_display()
             return jsonify({
                 'success': True,
                 'note_id': note_id,
@@ -2694,6 +2809,7 @@ def change_note_color(board_id, note_id):
         
         if update_note_color_by_note_id(note_id, effective_author_key, color_index, need_lora_update=True):
             socketio.emit('refresh_notes', {'board_id': board_id})
+            update_epaper_display()
             return jsonify({
                 'success': True,
                 'note_id': note_id,
@@ -2823,6 +2939,7 @@ def pin_board_note(board_id, note_id):
                     socketio.emit('lora_status', {'online': False, 'channel_validated': False, 'error_message': None, 'power_issue': False})
         
         socketio.emit('refresh_notes', {'board_id': board_id})
+        update_epaper_display()
         
         return jsonify({
             'success': True,
@@ -2892,6 +3009,7 @@ def delete_board_note(board_id, note_id):
         conn.close()
         
         socketio.emit('refresh_notes', {'board_id': board_id})
+        update_epaper_display()
         
         return jsonify({
             'success': True,
@@ -3034,6 +3152,7 @@ def resend_board_note(board_id, note_id):
                 print(f"  -> 已排程在 15 秒後發送 pin 命令")
             
             socketio.emit('refresh_notes', {'board_id': board_id})
+            update_epaper_display()
             
             return jsonify({
                 'success': True,
@@ -3057,6 +3176,7 @@ def resend_board_note(board_id, note_id):
                 lora_connected = False
                 socketio.emit('usb_connection_error', {'message': error_msg})
                 socketio.emit('lora_status', {'online': False, 'channel_validated': False, 'error_message': None, 'power_issue': False})
+                update_epaper_display()
             
             return jsonify({
                 'success': False,
@@ -4038,9 +4158,160 @@ def get_tilejson(tileset):
             'error': str(e)
         }), 500
 
+def get_primary_board_id():
+    """取得主要頻道（優先使用 session 選擇，其次 active/config 第一個）"""
+    current_board = get_session_value('selected_board', None)
+    if current_board and current_board in CONFIGURED_CHANNEL_NAMES:
+        return current_board
+    if active_channels:
+        return active_channels[0]['name']
+    if CONFIGURED_CHANNEL_NAMES:
+        return CONFIGURED_CHANNEL_NAMES[0]
+    return None
+
+def resolve_epaper_profile(query_args):
+    """
+    解析電子紙渲染參數。
+    未來新增參數時，擴充 EPAPER_SUPPORTED_OPTIONS 與此函式即可。
+    """
+    resolved = {}
+    fallback_flags = {}
+    for key, default_value in EPAPER_DEFAULT_PROFILE.items():
+        requested_value = (query_args.get(key, default_value) or '').strip()
+        if requested_value in EPAPER_SUPPORTED_OPTIONS.get(key, set()):
+            resolved[key] = requested_value
+            fallback_flags[key] = False
+        else:
+            resolved[key] = default_value
+            fallback_flags[key] = True
+    return resolved, fallback_flags
+
+def format_epaper_time_short(timestamp_ms):
+    """
+    格式化電子紙用的簡短時間（不含年份）。
+    一律顯示 M/D HH:MM 格式
+    """
+    local_time = time.localtime(timestamp_ms / 1000)
+    hm = time.strftime('%H:%M', local_time)
+    return f'{local_time.tm_mon}/{local_time.tm_mday} {hm}'
+
+def build_epaper_display_notes(board_id, max_notes=3):
+    """
+    取得電子紙顯示資料：置頂 note + 最新幾則主訊息（避免顯示回覆層級）。
+    """
+    notes = get_notes_from_db(board_id, include_deleted=False)
+    parent_notes = [
+        note for note in notes
+        if not note.get('archived')
+        and not note.get('isTempParentNote')
+        and note.get('replyLoraMessageId') is None
+    ]
+    parent_notes.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+
+    pinned_note = next((note for note in parent_notes if note.get('isPinedNote')), None)
+
+    def format_epaper_sender(note):
+        lora_node_id = (note.get('loraNodeId') or '').strip()
+        if not lora_node_id:
+            return ''
+        raw_node_id = lora_node_id.replace('lora-', '') if lora_node_id.startswith('lora-') else lora_node_id
+        short_node_id = raw_node_id[-4:] if len(raw_node_id) > 4 else raw_node_id
+        return f"lora-{short_node_id}"
+
+    display_notes = []
+    if pinned_note:
+        display_notes.append({
+            'note_id': pinned_note.get('noteId'),
+            'text': pinned_note.get('text', ''),
+            'time': pinned_note.get('time', ''),
+            'time_short': format_epaper_time_short(pinned_note.get('timestamp', 0)),
+            'sender': format_epaper_sender(pinned_note),
+            'bg_color': pinned_note.get('bgColor', ''),
+            'is_pinned': True
+        })
+
+    for note in parent_notes:
+        if pinned_note and note.get('noteId') == pinned_note.get('noteId'):
+            continue
+        display_notes.append({
+            'note_id': note.get('noteId'),
+            'text': note.get('text', ''),
+            'time': note.get('time', ''),
+            'time_short': format_epaper_time_short(note.get('timestamp', 0)),
+            'sender': format_epaper_sender(note),
+            'bg_color': note.get('bgColor', ''),
+            'is_pinned': False
+        })
+        if len(display_notes) >= max_notes:
+            break
+
+    remaining_notes_count = max(0, len(parent_notes) - len(display_notes))
+    return display_notes, remaining_notes_count
+
+@app.route('/epaper', methods=['GET'])
+def epaper_view():
+    profile, fallback_flags = resolve_epaper_profile(request.args)
+    canvas_spec = EPAPER_CANVAS_SPECS[profile['canvas']]
+    board_id = get_primary_board_id()
+
+    notes = []
+    remaining_notes_count = 0
+    if board_id:
+        notes, remaining_notes_count = build_epaper_display_notes(
+            board_id,
+            max_notes=canvas_spec.get('max_notes', 3)
+        )
+
+    wifi_ssid = get_current_wifi_ssid()
+
+    template_name = 'epaper.html'
+    extra_context = {}
+
+    if profile['layout'] == 'photo_qr':
+        template_name = 'epaper_photo.html'
+        photo_path = get_current_photo_path()
+        extra_context['has_photo'] = photo_path is not None
+
+    return render_template(
+        template_name,
+        board_id=board_id,
+        notes=notes,
+        remaining_notes_count=remaining_notes_count,
+        profile=profile,
+        fallback_flags=fallback_flags,
+        canvas_spec=canvas_spec,
+        epaper_meta={
+            'project_name': APP_PROJECT_NAME,
+            'service_name': NOTEBOARD_SERVICE_NAME,
+            'page_title': f'{NOTEBOARD_SERVICE_NAME} ePaper',
+            'version': APP_VERSION,
+            'wifi_qr_payload': f'WIFI:T:nopass;S:{wifi_ssid};;',
+            'wifi_ssid': wifi_ssid,
+            'connect_note': EPAPER_CONNECT_NOTE,
+            'lora_online': lora_connected,
+            'lora_channel_validated': channel_validated
+        },
+        **extra_context
+    )
+
+@app.route('/epaper/photo/current')
+def epaper_current_photo():
+    photo_path = get_current_photo_path()
+    if photo_path and os.path.exists(photo_path):
+        return send_file(photo_path)
+    return '', 404
+
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template(
+        'index.html',
+        app_meta={
+            'service_name': NOTEBOARD_SERVICE_NAME,
+            'page_title': NOTEBOARD_SERVICE_NAME,
+            'project_name': APP_PROJECT_NAME,
+            'version': APP_VERSION
+        }
+    )
 
 @app.route('/<path:path>')
 def catch_all(path):
@@ -4074,5 +4345,6 @@ def run_noteboard_app():
     
     socketio.start_background_task(target=mesh_loop)
     socketio.start_background_task(target=send_scheduler_loop)
+    start_epaper_periodic_refresh()
     print(f"MeshBridge NoteBoard 伺服器啟動中 (Port 80, Channels: {CONFIGURED_CHANNEL_NAMES})...")
     socketio.run(app, host='0.0.0.0', port=80, debug=False)

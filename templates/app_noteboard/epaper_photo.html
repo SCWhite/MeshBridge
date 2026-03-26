@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width={{ canvas_spec.width }}, height={{ canvas_spec.height }}, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>{{ epaper_meta.page_title }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='epaper.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='epaper_photo.css') }}">
+</head>
+<body
+    class="epaper-root color-{{ profile.color_mode }} canvas-{{ profile.canvas }} layout-{{ profile.layout }}"
+    data-color-mode="{{ profile.color_mode }}"
+    data-layout="{{ profile.layout }}"
+    data-canvas="{{ profile.canvas }}"
+>
+    <main class="epaper-photo-stage">
+        <section class="photo-area">
+            {% if has_photo %}
+            <img src="/epaper/photo/current" class="photo-cover" alt="Photo" />
+            {% else %}
+            <div class="photo-placeholder">NO PHOTO</div>
+            {% endif %}
+        </section>
+
+        <footer class="photo-info-area">
+            <section class="photo-notes">
+                {% if notes %}
+                    {% for note in notes %}
+                    <div class="photo-note-row {% if note.is_pinned %}is-pinned{% endif %}"
+                        {% if profile.color_mode == 'full_color' and note.bg_color %}
+                        style="background-color: {{ note.bg_color }};"
+                        {% endif %}
+                    >
+                        {% if note.is_pinned %}
+                        <span class="photo-note-pin">PIN</span>
+                        {% endif %}
+                        <span class="photo-note-text">{{ note.text }}</span>
+                        <span class="photo-note-meta">{{ note.time_short }}</span>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="photo-note-row photo-note-empty">
+                        <span class="photo-note-text">{{ board_id or '' }} — no messages</span>
+                    </div>
+                {% endif %}
+            </section>
+
+            <section class="photo-bottom-bar">
+                <div id="wifi-qrcode" class="photo-qrcode" data-qr-payload="{{ epaper_meta.wifi_qr_payload }}"></div>
+                <div class="photo-meta">
+                    <div class="photo-meta-wifi">Wi-Fi: {{ epaper_meta.wifi_ssid }}</div>
+                    <div class="photo-meta-hint">{{ epaper_meta.connect_note }}</div>
+                    <div class="photo-meta-footer">
+                        <span>{{ epaper_meta.service_name }}</span>
+                        <span class="photo-meta-sep">&middot;</span>
+                        <span>{{ epaper_meta.version }}</span>
+                        <span class="photo-meta-sep">&middot;</span>
+                        <span class="lora-indicator {% if epaper_meta.lora_online %}is-online{% else %}is-offline{% endif %}">
+                            LoRa {% if epaper_meta.lora_online %}ON{% else %}OFF{% endif %}
+                        </span>
+                    </div>
+                </div>
+            </section>
+        </footer>
+    </main>
+
+    <script src="{{ url_for('static', filename='qrcode.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='epaper.js') }}"></script>
+</body>
+</html>

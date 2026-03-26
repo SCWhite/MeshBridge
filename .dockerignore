@@ -56,3 +56,9 @@ build_and_push_docker.sh
 # Temporary files
 *.tmp
 *.bak
+
+# ePaper hardware driver (not needed in container)
+python3-epd/
+
+# Photos (mounted as volume)
+photos/

@@ -1,0 +1,300 @@
+/* ── ePaper Photo Frame Layout (photo_qr) ── */
+
+.epaper-photo-stage {
+    width: 480px;
+    height: 800px;
+    display: flex;
+    flex-direction: column;
+    background: var(--paper-bg);
+    overflow: hidden;
+}
+
+/* ── Photo Area ── */
+
+.photo-area {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    background: #000;
+}
+
+.photo-cover {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.photo-placeholder {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: var(--paper-muted);
+    background: var(--paper-bg);
+}
+
+/* ── Compact Info Footer ── */
+
+.photo-info-area {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    border-top: 2px solid var(--paper-border);
+    background: var(--paper-panel);
+}
+
+/* ── Compact Note Rows ── */
+
+.photo-notes {
+    display: flex;
+    flex-direction: column;
+}
+
+.photo-note-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-bottom: 1px solid var(--paper-border);
+    min-height: 26px;
+    background: var(--paper-bg);
+}
+
+.photo-note-row.is-pinned {
+    border-bottom-width: 1px;
+    border-bottom-color: var(--paper-border);
+}
+
+.photo-note-pin {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    background: var(--paper-pin-bg);
+    color: var(--paper-pin-fg);
+    padding: 1px 4px;
+    flex-shrink: 0;
+    line-height: 1.2;
+}
+
+.photo-note-text {
+    flex: 1;
+    font-size: 15px;
+    font-weight: 400;
+    line-height: 1.3;
+    color: var(--paper-fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.photo-note-meta {
+    font-size: 10px;
+    font-weight: 400;
+    color: var(--paper-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.photo-note-empty {
+    justify-content: center;
+}
+
+.photo-note-empty .photo-note-text {
+    text-align: center;
+    color: var(--paper-muted);
+    font-size: 12px;
+}
+
+/* ── Bottom Bar: QR + Meta ── */
+
+.photo-bottom-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
+}
+
+.photo-qrcode {
+    width: 80px;
+    height: 80px;
+    border: 1px solid var(--paper-border);
+    background: #fff;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.photo-qrcode img,
+.photo-qrcode canvas {
+    width: 70px !important;
+    height: 70px !important;
+}
+
+.photo-meta {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+}
+
+.photo-meta-wifi {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--paper-fg);
+    line-height: 1.2;
+}
+
+.photo-meta-hint {
+    font-size: 14px;
+    font-weight: 400;
+    color: var(--paper-muted);
+    line-height: 1.3;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+}
+
+.photo-meta-footer {
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--paper-muted);
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    line-height: 1.2;
+    margin-top: 1px;
+}
+
+.photo-meta-sep {
+    opacity: 0.5;
+}
+
+.lora-indicator {
+    font-weight: 600;
+}
+
+.lora-indicator.is-online {
+    color: var(--paper-fg);
+}
+
+.lora-indicator.is-offline {
+    color: var(--paper-muted);
+}
+
+/* ── Color theme overrides for photo layout ── */
+
+.epaper-root.color-full_color .lora-indicator.is-online {
+    color: #16a34a;
+}
+
+.epaper-root.color-full_color .photo-note-row.is-pinned {
+    border-left: 3px solid #2563eb;
+}
+
+.epaper-root.color-mono .photo-note-row.is-pinned {
+    border-left: 3px solid #000;
+}
+
+.epaper-root.color-dual_rb .photo-note-row.is-pinned {
+    border-left: 3px solid #c01818;
+}
+
+/* ══════════════════════════════════════════════
+   canvas-w7: Landscape 800×480 photo_qr layout
+   Photo left ← → Info panel right
+   ══════════════════════════════════════════════ */
+
+.canvas-w7 .epaper-photo-stage {
+    width: 800px;
+    height: 480px;
+    flex-direction: row;
+}
+
+.canvas-w7 .photo-info-area {
+    width: 180px;
+    flex-shrink: 0;
+    border-top: none;
+    border-left: 2px solid var(--paper-border);
+    justify-content: space-between;
+}
+
+.canvas-w7 .photo-notes {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    padding: 6px 6px 0;
+    gap: 4px;
+}
+
+.canvas-w7 .photo-note-row {
+    padding: 4px 6px;
+    min-height: auto;
+    gap: 2px;
+    flex-direction: column;
+    align-items: flex-start;
+    border-bottom: none;
+    margin-bottom: 4px;
+    border: 1px solid var(--paper-border);
+}
+
+.canvas-w7 .photo-note-text {
+    font-size: 13px;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: unset;
+    line-height: 1.3;
+}
+
+.canvas-w7 .photo-note-meta {
+    font-size: 9px;
+}
+
+.canvas-w7 .photo-bottom-bar {
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 8px;
+    border-top: 1px solid var(--paper-border);
+}
+
+.canvas-w7 .photo-qrcode {
+    width: 70px;
+    height: 70px;
+}
+
+.canvas-w7 .photo-qrcode img,
+.canvas-w7 .photo-qrcode canvas {
+    width: 60px !important;
+    height: 60px !important;
+}
+
+.canvas-w7 .photo-meta {
+    align-items: center;
+    text-align: center;
+    gap: 1px;
+}
+
+.canvas-w7 .photo-meta-wifi {
+    font-size: 12px;
+}
+
+.canvas-w7 .photo-meta-hint {
+    font-size: 11px;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+}
+
+.canvas-w7 .photo-meta-footer {
+    font-size: 10px;
+    justify-content: center;
+    flex-wrap: wrap;
+}

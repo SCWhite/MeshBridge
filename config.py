@@ -1,8 +1,9 @@
 LOCAL_APP = "noteboard"
 
-
 SEND_INTERVAL_SECOND = 30
 ACK_TIMEOUT_SECONDS = 60
+
+NOTEBOARD_SERVICE_NAME = "Mesh資訊站"
 
 # 單一頻道設定（舊版格式，不再使用，可直接使用新版格式的頻道設定）
 # BOARD_MESSAGE_CHANEL_NAME = "MQBoardTest"
@@ -27,3 +28,30 @@ BOARD_MESSAGE_CHANNELS = [
         "max_notes": 200, "max_archived_notes": 200
     }
 ]
+
+# 切換頻道時是否要求重新輸入密碼
+# False（預設）：輸入一次密碼後，該頻道的認證狀態會持續保留
+# True：離開頻道後認證狀態會被清除，下次進入需重新輸入密碼
+REAUTH_ON_CHANNEL_SWITCH = False
+
+# ePaper 模組設定
+# 設定 ePaper 模組 ID，若未設定或為空則不使用 ePaper 功能
+
+# 目前支援的 ePaper 硬體模組與對應的 ID: 
+# weshare-epd7in3e : 7.3寸彩色 https://www.waveshare.net/wiki/7.3inch_e-Paper_HAT_(E)_Manual
+# weshare-epd7in5_V2 : 7.5寸黑白 https://www.waveshare.net/wiki/7.5inch_e-Paper_HAT_Manual
+
+EPAPER_MODULE_ID=""
+
+# 目前支援的顯示方式: 
+# standard_qr,p7 : 標準顯示方式，包含最新三則訊息加 Wifi資訊 QR Code , 直式7寸顯示方式
+# standard_qr,w7 : 標準顯示方式，包含最新三則訊息加 Wifi資訊 QR Code , 橫式7寸顯示方式
+# photo_qr,p7 : 像框顯示方式，顯示指定資料夾中的照片，包含最新三則訊息加 Wifi資訊 QR Code , 直式7寸顯示方式
+# photo_qr,w7 : 像框顯示方式，顯示指定資料夾中的照片，包含最新三則訊息加 Wifi資訊 QR Code , 橫式7寸顯示方式
+
+EPAPER_DISPLAY_MODE="standard_qr,w7"
+#EPAPER_PHOTO_FOLDER="photos"
+#EPAPER_PHOTO_DURATION=15  # 照片輪播間隔（分鐘），最小值 15 分鐘
+
+# ePaper 連線提示文字
+EPAPER_CONNECT_NOTE = "或在該網路下，手動連線 10.0.0.1 即可檢視更多訊息。 "

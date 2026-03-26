@@ -48,3 +48,5 @@ wheels/
 .DS_Store
 Thumbs.db
 /maps
+/photos
+/python3-epd
