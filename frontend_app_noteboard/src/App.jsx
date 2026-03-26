@@ -4,6 +4,10 @@ import LocationMap from './LocationMap'
 import LocationPicker from './LocationPicker'
 
 const DEFAULT_BOARD_ID = 'YourChannelName'
+const APP_META = (typeof window !== 'undefined' && window.APP_META) ? window.APP_META : {}
+const APP_SERVICE_NAME = APP_META.serviceName || 'Mesh資訊站'
+const APP_PROJECT_NAME = APP_META.projectName || 'meshBridge/meshNoteboard'
+const APP_VERSION = APP_META.version || 'v0.5.0'
 
 const COLOR_PALETTE = [
   'hsl(0, 70%, 85%)',      // 0: Red
@@ -115,6 +119,7 @@ function App() {
   const [userLastLocations, setUserLastLocations] = useState({})
   const [mapEnabled, setMapEnabled] = useState(false)
   const [filterInputReadonly, setFilterInputReadonly] = useState(true)
+  const [reauthOnChannelSwitch, setReauthOnChannelSwitch] = useState(false)
   const filterInputRef = useRef(null)
   const [isSubmittingDraft, setIsSubmittingDraft] = useState(false)
   const [isSubmittingReply, setIsSubmittingReply] = useState(false)
@@ -263,6 +268,7 @@ function App() {
         const featuresData = await featuresResponse.json()
         if (featuresData.success && featuresData.features) {
           setMapEnabled(featuresData.features.map_enabled || false)
+          setReauthOnChannelSwitch(featuresData.features.reauth_on_channel_switch || false)
         }
       } catch (error) {
         console.error('Failed to fetch features config:', error)
@@ -766,6 +772,25 @@ function App() {
     const status = channelVerifiedStatus[channelName]
     
     if (status && status.requiresPassword && !status.isVerified) {
+      // 若啟用 reauth，先對後端發 select_board 以清除舊頻道認證
+      if (reauthOnChannelSwitch && boardId !== channelName) {
+        try {
+          await fetch('/api/session/select_board', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ board_id: channelName })
+          })
+        } catch (e) { /* ignore */ }
+        // 同步更新前端：舊頻道標記為未驗證、移除 admin
+        setChannelVerifiedStatus(prev => {
+          const oldStatus = prev[boardId]
+          if (oldStatus && oldStatus.requiresPassword) {
+            return { ...prev, [boardId]: { ...oldStatus, isVerified: false } }
+          }
+          return prev
+        })
+        setAdminChannels(prev => prev.filter(ch => ch !== boardId))
+      }
       setPendingChannel(channelName)
       setPasswordInput('')
       setPasswordError('')
@@ -775,6 +800,7 @@ function App() {
     }
     
     try {
+      const oldBoardId = boardId
       const response = await fetch('/api/session/select_board', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -782,6 +808,17 @@ function App() {
       })
       const data = await response.json()
       if (data.success) {
+        // 若啟用 reauth，同步清除前端舊頻道的認證狀態
+        if (reauthOnChannelSwitch && oldBoardId !== channelName) {
+          setChannelVerifiedStatus(prev => {
+            const oldStatus = prev[oldBoardId]
+            if (oldStatus && oldStatus.requiresPassword) {
+              return { ...prev, [oldBoardId]: { ...oldStatus, isVerified: false } }
+            }
+            return prev
+          })
+          setAdminChannels(prev => prev.filter(ch => ch !== oldBoardId))
+        }
         setBoardId(channelName)
         setShowChannelDropdown(false)
       }
@@ -1895,7 +1932,7 @@ function App() {
               ))}
             </div>
           )}
-          <div className="app-label">MeshNoteboard 便利貼牆</div>
+          <div className="app-label">{APP_SERVICE_NAME}</div>
         </div>
         
         <div className="status-container" style={{ position: 'relative' }}>
@@ -2064,7 +2101,7 @@ function App() {
 
       <footer className="app-footer">
         <div className="footer-left">uid={myUUID}</div>
-        <div className="footer-right">MeshNoteboard v0.5.0</div>
+        <div className="footer-right">{APP_PROJECT_NAME} {APP_VERSION}</div>
       </footer>
 
       {modalConfig.show && (

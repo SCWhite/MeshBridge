@@ -1,0 +1,384 @@
+:root {
+    --paper-bg: #f6f6f6;
+    --paper-fg: #111;
+    --paper-muted: #444;
+    --paper-panel: #ffffff;
+    --paper-border: #111;
+    --paper-accent: #111;
+    --paper-pin-bg: #111;
+    --paper-pin-fg: #fff;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: var(--paper-bg);
+    color: var(--paper-fg);
+    font-family: "Noto Sans TC", "PingFang TC", sans-serif;
+    overflow: hidden;
+}
+
+.epaper-root {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+}
+
+.epaper-stage {
+    width: 800px;
+    height: 480px;
+    padding: 14px;
+    border: 2px solid var(--paper-border);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: var(--paper-bg);
+    box-sizing: border-box;
+}
+
+.epaper-header {
+    border: 2px solid var(--paper-border);
+    padding: 5px 10px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: stretch;
+    gap: 8px;
+    background: var(--paper-panel);
+}
+
+.epaper-header-main {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 1px;
+}
+
+.service-title {
+    font-size: 24px;
+    font-weight: 700;
+    line-height: 1.05;
+}
+
+.header-meta-line {
+    font-size: 13px;
+    font-weight: 400;
+    color: var(--paper-muted);
+    line-height: 1.1;
+    white-space: nowrap;
+}
+
+.epaper-content {
+    min-height: 0;
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1.45fr 1fr;
+    gap: 10px;
+}
+
+.epaper-left,
+.epaper-right {
+    border: 2px solid var(--paper-border);
+    background: var(--paper-panel);
+    padding: 10px;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.block-title {
+    font-size: 13px;
+    font-weight: 600;
+    border-bottom: 1px solid var(--paper-border);
+    padding-bottom: 2px;
+}
+
+.lora-status-row {
+    border: 2px solid var(--paper-border);
+    background: var(--paper-bg);
+    padding: 6px 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.lora-status-header {
+    width: 190px;
+    min-width: 190px;
+    flex: 0 0 190px;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+.lora-status-label {
+    font-size: 14px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.lora-status-badge {
+    font-size: 13px;
+    font-weight: 600;
+    border: 1px solid var(--paper-border);
+    padding: 2px 6px;
+    white-space: nowrap;
+}
+
+.lora-status-badge.is-online {
+    background: var(--paper-pin-bg);
+    color: var(--paper-pin-fg);
+}
+
+.lora-status-badge.is-offline {
+    background: transparent;
+    color: var(--paper-fg);
+}
+
+.note-list {
+    min-height: 0;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.note-card {
+    border: 2px solid var(--paper-border);
+    background: var(--paper-bg);
+    padding: 12px 8px;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 0;
+    flex: 1;
+}
+
+.note-card.is-pinned {
+    border-width: 3px;
+}
+
+.note-card-head {
+    position: absolute;
+    top: 3px;
+    right: 4px;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    background: var(--paper-bg);
+    padding: 0 3px;
+    z-index: 1;
+    line-height: 1;
+}
+
+.note-sender {
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--paper-muted);
+}
+
+.note-badge {
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.3px;
+    background: var(--paper-pin-bg);
+    color: var(--paper-pin-fg);
+    padding: 1px 5px;
+    border: 1px solid var(--paper-border);
+}
+
+.note-text {
+    font-size: 24px;
+    line-height: 1.35;
+    font-weight: 400;
+    color: var(--paper-fg);
+    word-break: break-word;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+}
+
+.note-time {
+    position: absolute;
+    bottom: 3px;
+    right: 4px;
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--paper-muted);
+    background: var(--paper-bg);
+    padding: 0 3px;
+    z-index: 1;
+    line-height: 1;
+}
+
+.note-card.empty {
+    justify-content: center;
+    align-items: center;
+    flex: 1;
+}
+
+.note-more-hint {
+    margin-top: 2px;
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--paper-muted);
+    text-align: right;
+}
+
+.qrcode-box {
+    width: 230px;
+    height: 230px;
+    border: 2px solid var(--paper-border);
+    background: #fff;
+    align-self: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.qrcode-box img,
+.qrcode-box canvas {
+    width: 210px !important;
+    height: 210px !important;
+}
+
+.qrcode-fallback {
+    font-size: 14px;
+    font-weight: 700;
+    text-align: center;
+    padding: 8px;
+}
+
+.qrcode-text {
+    margin-top: auto;
+    font-size: 16px;
+    line-height: 1.45;
+    font-weight: 500;
+    color: var(--paper-fg);
+}
+
+/* ── Portrait 直式 (p7) ── */
+
+.canvas-p7 .epaper-stage {
+    width: 480px;
+    height: 800px;
+}
+
+.canvas-p7 .epaper-header {
+    grid-template-columns: 1fr auto;
+}
+
+.canvas-p7 .service-title {
+    font-size: 20px;
+}
+
+.canvas-p7 .header-meta-line {
+    font-size: 12px;
+}
+
+.canvas-p7 .lora-status-header {
+    width: 150px;
+    min-width: 150px;
+    flex: 0 0 150px;
+}
+
+.canvas-p7 .lora-status-label {
+    font-size: 13px;
+}
+
+.canvas-p7 .lora-status-badge {
+    font-size: 12px;
+}
+
+.canvas-p7 .epaper-content {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr auto;
+}
+
+.canvas-p7 .epaper-left {
+    min-height: 0;
+}
+
+.canvas-p7 .epaper-right {
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    padding: 10px;
+}
+
+.canvas-p7 .epaper-right .block-title {
+    display: none;
+}
+
+.canvas-p7 .qrcode-box {
+    width: 160px;
+    height: 160px;
+    flex-shrink: 0;
+}
+
+.canvas-p7 .qrcode-box img,
+.canvas-p7 .qrcode-box canvas {
+    width: 140px !important;
+    height: 140px !important;
+}
+
+.canvas-p7 .qrcode-text {
+    margin-top: 0;
+    font-size: 14px;
+    line-height: 1.4;
+    flex: 1;
+}
+
+.canvas-p7 .note-text {
+    font-size: 22px;
+}
+
+/* ── Color themes ── */
+
+.epaper-root.color-mono {
+    --paper-bg: #f7f7f7;
+    --paper-fg: #050505;
+    --paper-muted: #333;
+    --paper-panel: #ffffff;
+    --paper-border: #000;
+    --paper-pin-bg: #000;
+    --paper-pin-fg: #fff;
+}
+
+.epaper-root.color-full_color {
+    --paper-bg: #f2f7ff;
+    --paper-fg: #0f172a;
+    --paper-muted: #334155;
+    --paper-panel: #ffffff;
+    --paper-border: #1e3a8a;
+    --paper-pin-bg: #2563eb;
+    --paper-pin-fg: #fff;
+}
+
+.epaper-root.color-full_color .lora-status-badge.is-online {
+    background: #16a34a;
+    color: #fff;
+}
+
+.epaper-root.color-dual_rb {
+    --paper-bg: #fbf9f7;
+    --paper-fg: #111111;
+    --paper-muted: #2f2f2f;
+    --paper-panel: #ffffff;
+    --paper-border: #111111;
+    --paper-pin-bg: #c01818;
+    --paper-pin-fg: #ffffff;
+}

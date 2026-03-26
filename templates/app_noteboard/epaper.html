@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width={{ canvas_spec.width }}, height={{ canvas_spec.height }}, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>{{ epaper_meta.page_title }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='epaper.css') }}">
+</head>
+<body
+    class="epaper-root color-{{ profile.color_mode }} canvas-{{ profile.canvas }} layout-{{ profile.layout }}"
+    data-color-mode="{{ profile.color_mode }}"
+    data-layout="{{ profile.layout }}"
+    data-canvas="{{ profile.canvas }}"
+    data-fallback-color-mode="{{ fallback_flags.color_mode }}"
+    data-fallback-layout="{{ fallback_flags.layout }}"
+    data-fallback-canvas="{{ fallback_flags.canvas }}"
+>
+    <main class="epaper-stage" aria-label="MeshBridge ePaper 顯示板">
+        <header class="epaper-header">
+            <div class="epaper-header-main">
+                <div class="service-title">{{ epaper_meta.service_name }}</div>
+                <div class="header-meta-line">{{ epaper_meta.project_name }} ・ 版本 {{ epaper_meta.version }}</div>
+            </div>
+            <div class="lora-status-row lora-status-header" aria-label="LoRa 連線狀態">
+                <span class="lora-status-label">LoRa 狀態</span>
+                <span class="lora-status-badge {% if epaper_meta.lora_online %}is-online{% else %}is-offline{% endif %}">
+                    {% if epaper_meta.lora_online %}
+                        已連線
+                    {% else %}
+                        未連線
+                    {% endif %}
+                </span>
+            </div>
+        </header>
+
+        <section class="epaper-content">
+            <section class="epaper-left" aria-label="置頂與最新便利貼">
+                <div class="block-title">主要頻道：{{ board_id or '未設定' }}</div>
+                <div class="note-list">
+                    {% if notes %}
+                        {% for note in notes %}
+                        <article
+                            class="note-card {% if note.is_pinned %}is-pinned{% endif %}"
+                            {% if profile.color_mode == 'full_color' and note.bg_color %}
+                            style="background-color: {{ note.bg_color }};"
+                            {% endif %}
+                        >
+                            <div class="note-card-head">
+                                <span class="note-sender">{{ note.sender }}</span>
+                                {% if note.is_pinned %}
+                                <span class="note-badge">置頂</span>
+                                {% endif %}
+                            </div>
+                            <div class="note-text">{{ note.text }}</div>
+                            <div class="note-time">{{ note.time }}</div>
+                        </article>
+                        {% endfor %}
+                        {% if remaining_notes_count > 0 %}
+                        <div class="note-more-hint">還有 {{ remaining_notes_count }} 則..</div>
+                        {% endif %}
+                    {% else %}
+                        <article class="note-card empty">
+                            <div class="note-text">目前主要頻道沒有可顯示的便利貼。</div>
+                        </article>
+                    {% endif %}
+                </div>
+            </section>
+
+            <aside class="epaper-right" aria-label="系統登入 QRCode">
+                <div class="block-title">進入系統</div>
+                <div id="wifi-qrcode" class="qrcode-box" data-qr-payload="{{ epaper_meta.wifi_qr_payload }}"></div>
+                <div class="qrcode-text">
+                    用手機掃描 QRCode<br/>加入 Wi-Fi：{{ epaper_meta.wifi_ssid }}<br>
+                    {{ epaper_meta.connect_note }}
+                </div>
+            </aside>
+        </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='qrcode.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='epaper.js') }}"></script>
+</body>
+</html>

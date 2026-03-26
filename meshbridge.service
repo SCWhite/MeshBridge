@@ -7,6 +7,8 @@ Type=simple
 User=root
 WorkingDirectory=/home/pi/MeshBridge
 ExecStart=/home/pi/MeshBridge/venv/bin/python /home/pi/MeshBridge/app.py
+ExecStop=/home/pi/MeshBridge/venv/bin/python /home/pi/MeshBridge/app_shutdown.py
+TimeoutStopSec=90
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
