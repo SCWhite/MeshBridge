@@ -295,6 +295,11 @@ BOARD_MESSAGE_CHANNELS = [
     }
 ]
 ```
+### 頻道設定注意事項
+
+- **頻道名稱**：`name` 必須與 Meshtastic 裝置上設定的頻道名稱完全一致（區分大小寫），不可使用保留名稱（如 `MeshTW`、`Emergency!`）
+- **頻道可用性**：連線裝置後，僅有在裝置上實際存在的頻道會啟用；未在裝置上找到的頻道設定仍會保留，但無法收發 LoRa 訊息
+- **密碼獨立性**：每個頻道的 `user_passcode`、`admin_passcode`、`post_passcode` 互相獨立，建議設定為不同的值以提高安全性
 
 ### 5.3 舊版單一頻道設定（已棄用）
 
@@ -309,12 +314,36 @@ NOTEBOARD_ADMIN_PASSCODE = "your_admin_password"
 NOTEBOARD_POST_PASSCODE = "1234"
 ```
 
-### 注意事項
+### 5.4 自動補發功能（AUTO_RESEND）
 
-- **頻道名稱**：`name` 必須與 Meshtastic 裝置上設定的頻道名稱完全一致（區分大小寫），不可使用保留名稱（如 `MeshTW`、`Emergency!`）
-- **發送間隔**：`SEND_INTERVAL_SECOND` 建議設定在 30-180 秒之間，避免 LoRa 頻寬阻塞
-- **頻道可用性**：系統啟動連線裝置後，僅有在裝置上實際存在的頻道會被標記為 active；未在裝置上找到的頻道設定仍會保留，但無法收發 LoRa 訊息
-- **密碼獨立性**：每個頻道的 `user_passcode`、`admin_passcode`、`post_passcode` 互相獨立，建議設定為不同的值以提高安全性
+當留言透過 LoRa 發送後，可能因距離、干擾等因素導致部分節點未收到。自動補發功能會在每次排程週期中檢查已發送的留言，若收到的  USER_ACK 數量不足，則自動重新發送，確保留言能傳達至所有節點。
+
+#### 參數說明
+
+| 參數名稱 | 類型 | 預設值 | 說明 |
+|---------|------|--------|------|
+| `AUTO_RESEND_NODE` | int | `0` | 期望應收到 ACK 的節點數量。設為 `0` 則**停用**自動重發功能。當留言收到的 ACK 數少於此值時，該留言會被列為重發候選 |
+| `AUTO_RESEND_MIN_MINUTE` | float | `6` | 留言建立後的最短等待時間（分鐘）。避免剛發送的留言立即被重發，留出足夠時間等待 ACK 回傳 |
+| `AUTO_RESEND_MAX_MINUTE` | float | `720` | 留言建立後的最長有效時間（分鐘）。超過此時間的留言不再自動重發 |
+
+#### 設定範例
+
+```python
+# 自動重發功能參數
+AUTO_RESEND_NODE=2          # 期望 2 個節點回傳 ACK，設為 0 停用
+AUTO_RESEND_MIN_MINUTE=2    # 留言建立 2 分鐘後才開始檢查是否需要重發
+AUTO_RESEND_MAX_MINUTE=60   # 超過 60 分鐘的留言不再自動重發
+```
+
+#### 運作機制
+
+1. 每次排程週期（由 `SEND_INTERVAL_SECOND` 決定），系統會查詢所有符合以下條件的留言：
+   - 狀態為 `LoRa sent`（本機所建立的留言，已經成功送出到裝置）
+   - 建立時間介於 `AUTO_RESEND_MIN_MINUTE` ~ `AUTO_RESEND_MAX_MINUTE` 之間
+   - 收到的 ACK 數量少於 `AUTO_RESEND_NODE`
+2. 從候選留言中選出**重發次數最少**的一則進行重發（每次排程僅重發一則）
+3. **線性退避機制**：重發次數越多的留言，下次重發前需等待越久（每次重發後的冷卻時間 = 重發次數 × 150 秒），避免同一則留言頻繁重發佔用頻寬
+
 
 ## 6. LoRa 指令說明
 

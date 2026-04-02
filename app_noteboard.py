@@ -24,7 +24,7 @@ print(f"[系統] 使用多頻道設定: {[ch['name'] for ch in BOARD_MESSAGE_CHA
 CONFIGURED_CHANNEL_NAMES = [ch['name'] for ch in BOARD_MESSAGE_CHANNELS]
 NOTEBOARD_MBTILES_FOLDER = getattr(config, 'NOTEBOARD_MBTILES_FOLDER', './maps')
 NOTEBOARD_MBTILES_LAYER_MODE = getattr(config, 'NOTEBOARD_MBTILES_LAYER_MODE', 'auto')
-APP_VERSION = "v0.6.0"
+APP_VERSION = "v0.6.1"
 APP_PROJECT_NAME = "meshBridge/meshNoteboard"
 NOTEBOARD_SERVICE_NAME = getattr(
     config,
@@ -33,6 +33,24 @@ NOTEBOARD_SERVICE_NAME = getattr(
 )
 EPAPER_CONNECT_NOTE = getattr(config, 'EPAPER_CONNECT_NOTE', '即可檢視更多訊息。')
 REAUTH_ON_CHANNEL_SWITCH = getattr(config, 'REAUTH_ON_CHANNEL_SWITCH', False)
+
+# 自動重送機制參數
+_auto_resend_node_raw = getattr(config, 'AUTO_RESEND_NODE', 0)
+try:
+    AUTO_RESEND_NODE = int(_auto_resend_node_raw)
+except (ValueError, TypeError):
+    AUTO_RESEND_NODE = 0
+
+AUTO_RESEND_BACKOFF_SECOND = 150
+
+if AUTO_RESEND_NODE > 0:
+    AUTO_RESEND_MIN_MINUTE = float(getattr(config, 'AUTO_RESEND_MIN_MINUTE', 6))
+    AUTO_RESEND_MAX_MINUTE = float(getattr(config, 'AUTO_RESEND_MAX_MINUTE', 720))
+    print(f"[自動重送] 功能已啟用: 需要 {AUTO_RESEND_NODE} 個節點 ACK, 時間範圍 {AUTO_RESEND_MIN_MINUTE}~{AUTO_RESEND_MAX_MINUTE} 分鐘, 退避基數 {AUTO_RESEND_BACKOFF_SECOND}s")
+else:
+    AUTO_RESEND_MIN_MINUTE = 0
+    AUTO_RESEND_MAX_MINUTE = 0
+    print(f"[自動重送] 功能未啟用 (AUTO_RESEND_NODE={AUTO_RESEND_NODE})")
 from app import get_power_status
 from app_noteboard_epaper import update_epaper_display, start_epaper_periodic_refresh, clear_epaper_display, get_current_photo_path
 
@@ -1642,6 +1660,76 @@ def send_scheduler_loop():
                         socketio.emit('usb_connection_error', {'message': error_msg})
                         socketio.emit('lora_status', {'online': False, 'channel_validated': False, 'error_message': None, 'power_issue': False})
                         update_epaper_display()
+            
+            # === 自動重送機制 ===
+            if AUTO_RESEND_NODE > 0 and not FLAG_DEVICE_WAITING_ACK and interface and lora_connected:
+                try:
+                    now_ms = int(time.time() * 1000)
+                    min_created_at = now_ms - int(AUTO_RESEND_MAX_MINUTE * 60 * 1000)  # 不早於 MAX_MINUTE 前
+                    max_created_at = now_ms - int(AUTO_RESEND_MIN_MINUTE * 60 * 1000)  # 不晚於 MIN_MINUTE 前
+                    
+                    # 取得所有 active channel 名稱
+                    active_ch_names = [ch['name'] for ch in active_channels]
+                    if not active_ch_names:
+                        pass  # 無可用頻道，跳過
+                    else:
+                        placeholders = ','.join(['?'] * len(active_ch_names))
+                        
+                        conn = sqlite3.connect(DB_PATH)
+                        conn.row_factory = sqlite3.Row
+                        cursor = conn.cursor()
+                        
+                        backoff_ms = AUTO_RESEND_BACKOFF_SECOND * 1000
+                        
+                        query = f'''
+                            SELECT n.note_id, n.board_id, n.resent_count, n.created_at, n.updated_at,
+                                   (SELECT COUNT(*) FROM ack_records ar WHERE ar.note_id = n.note_id) as ack_count
+                            FROM notes n
+                            WHERE n.status = 'LoRa sent'
+                              AND n.deleted = 0
+                              AND n.lora_msg_id IS NOT NULL AND n.lora_msg_id != ''
+                              AND n.created_at > ?
+                              AND n.created_at < ?
+                              AND n.board_id IN ({placeholders})
+                              AND (SELECT COUNT(*) FROM ack_records ar WHERE ar.note_id = n.note_id) < ?
+                              AND (n.resent_count = 0 OR (? - n.updated_at) >= n.resent_count * ?)
+                            ORDER BY n.resent_count ASC, n.created_at ASC
+                            LIMIT 1
+                        '''
+                        
+                        params = [min_created_at, max_created_at] + active_ch_names + [AUTO_RESEND_NODE, now_ms, backoff_ms]
+                        cursor.execute(query, params)
+                        candidate = cursor.fetchone()
+                        conn.close()
+                        
+                        if candidate:
+                            c_note_id = candidate['note_id']
+                            c_board_id = candidate['board_id']
+                            c_resent_count = candidate['resent_count']
+                            c_ack_count = candidate['ack_count']
+                            c_created_at = candidate['created_at']
+                            c_updated_at = candidate['updated_at']
+                            age_minutes = round((now_ms - c_created_at) / (60 * 1000), 1)
+                            since_last_update_s = round((now_ms - c_updated_at) / 1000, 1)
+                            next_backoff_s = (c_resent_count + 1) * AUTO_RESEND_BACKOFF_SECOND
+                            
+                            print(f"[自動重送] 找到候選 note: note_id={c_note_id}, board_id={c_board_id}, "
+                                  f"resent_count={c_resent_count}, ack_count={c_ack_count}/{AUTO_RESEND_NODE}, "
+                                  f"age={age_minutes}min, 距上次更新={since_last_update_s}s, 下次退避={next_backoff_s}s")
+                            
+                            success, message, new_resent_count = _execute_resend_note(c_board_id, c_note_id, triggered_by='auto')
+                            
+                            if success:
+                                print(f"[自動重送] 成功重送 note_id={c_note_id}, 新 resent_count={new_resent_count}")
+                            else:
+                                print(f"[自動重送] 重送失敗 note_id={c_note_id}: {message}")
+                        else:
+                            print(f"[自動重送] 本次無符合條件的 note 需要重送")
+                
+                except Exception as e:
+                    print(f"[自動重送] 處理異常: {e}")
+                    import traceback
+                    traceback.print_exc()
                 
         except Exception as e:
             error_str = str(e)
@@ -3024,6 +3112,134 @@ def delete_board_note(board_id, note_id):
             'error': str(e)
         }), 500
 
+def _execute_resend_note(board_id, note_id, triggered_by='user'):
+    """核心重送邏輯，供 API route 和自動重送機制共用
+    
+    Args:
+        board_id: 頻道名稱
+        note_id: 要重送的 note ID
+        triggered_by: 'user' (使用者手動) 或 'auto' (系統自動重送)
+    
+    Returns:
+        (success: bool, message: str, resent_count: int or None)
+    """
+    global interface, lora_connected, pending_ack, FLAG_DEVICE_WAITING_ACK
+    
+    log_prefix = f"[重新發送][{triggered_by}]"
+    
+    if FLAG_DEVICE_WAITING_ACK:
+        print(f"{log_prefix} LoRa 設備忙碌中，跳過 note_id={note_id}")
+        return (False, 'LoRa設備忙碌中', None)
+    
+    if not interface or not lora_connected:
+        print(f"{log_prefix} LoRa 未連線，跳過 note_id={note_id}")
+        return (False, 'LoRa not connected', None)
+    
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT note_id, status, author_key, body, bg_color, lora_msg_id, reply_lora_msg_id, resent_count, is_pined_note
+            FROM notes 
+            WHERE note_id = ? AND board_id = ? AND deleted = 0
+        ''', (note_id, board_id))
+        
+        result = cursor.fetchone()
+        if not result:
+            conn.close()
+            print(f"{log_prefix} note_id={note_id} 不存在或已刪除")
+            return (False, 'Note not found', None)
+        
+        status = result['status']
+        db_author_key = result['author_key']
+        body = result['body']
+        bg_color = result['bg_color']
+        lora_msg_id = result['lora_msg_id']
+        reply_lora_msg_id = result['reply_lora_msg_id']
+        resent_count = result['resent_count']
+        is_pined_note = result['is_pined_note']
+        
+        if status != 'LoRa sent':
+            conn.close()
+            print(f"{log_prefix} note_id={note_id} status={status}，非 LoRa sent，跳過")
+            return (False, 'Only LoRa sent notes can be resent', None)
+        
+        if not lora_msg_id:
+            conn.close()
+            print(f"{log_prefix} note_id={note_id} 無 lora_msg_id，跳過")
+            return (False, 'Note has no lora_msg_id', None)
+        
+        # 更新 resent_count
+        timestamp = int(time.time() * 1000)
+        cursor.execute('''
+            UPDATE notes 
+            SET resent_count = resent_count + 1, updated_at = ?
+            WHERE note_id = ?
+        ''', (timestamp, note_id))
+        conn.commit()
+        conn.close()
+        
+        # 根據是否為回覆決定使用 /msg 或 /reply 指令
+        try:
+            channel_index = get_channel_index(interface, board_id)
+            
+            # 取得 color_id
+            color_id = get_color_index_from_palette(bg_color)
+            
+            if reply_lora_msg_id:
+                msg = f"/reply <{lora_msg_id},{color_id},{db_author_key}>[{reply_lora_msg_id}]{body}"
+                print(f"{log_prefix} 使用 /reply 指令 (含 color_id 與 author_key): {msg}")
+            else:
+                msg = f"/msg [{lora_msg_id},{color_id},{db_author_key}]{body}"
+                print(f"{log_prefix} 使用 /msg 指令 (含 color_id 與 author_key): {msg}")
+            
+            interface.sendText(msg, channelIndex=channel_index)
+            print(f"  -> 已發送重新發送命令 (note_id={note_id}, resent_count={resent_count + 1}, triggered_by={triggered_by})")
+            print(f"  -> color_id={color_id}, author_key={db_author_key} 已在訊息中一併發送")
+            
+            # 如果該 note 有 is_pined_note = true，延遲 15 秒後發送 /pin 命令
+            if is_pined_note == 1:
+                def send_pin_command():
+                    try:
+                        pin_cmd = f"/pin [{lora_msg_id}]{db_author_key}"
+                        interface.sendText(pin_cmd, channelIndex=channel_index)
+                        print(f"  -> [延遲 15 秒後] 已發送 pin 命令: {pin_cmd}")
+                    except Exception as e:
+                        print(f"  -> [延遲 15 秒後] 發送 pin 命令失敗: {e}")
+                
+                eventlet.spawn_after(15, send_pin_command)
+                print(f"  -> 已排程在 15 秒後發送 pin 命令")
+            
+            socketio.emit('refresh_notes', {'board_id': board_id})
+            # update_epaper_display()
+            
+            return (True, 'OK', resent_count + 1)
+            
+        except Exception as e:
+            error_str = str(e)
+            print(f"{log_prefix} 發送失敗: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # 檢測 USB 連線異常
+            if "Timed out waiting for connection completion" in error_str or \
+               "device disconnected" in error_str or \
+               "裝置路徑" in error_str and "已消失" in error_str:
+                error_msg = "連線失敗：USB連線異常中斷，可能是 Pi 電力供應不足、更換線材、或 Mesh 裝置需要重啟"
+                print(f"{log_prefix} {error_msg}")
+                lora_connected = False
+                socketio.emit('usb_connection_error', {'message': error_msg})
+                socketio.emit('lora_status', {'online': False, 'channel_validated': False, 'error_message': None, 'power_issue': False})
+                update_epaper_display()
+            
+            return (False, f'Failed to send: {str(e)}', None)
+        
+    except Exception as e:
+        print(f"{log_prefix} 重新發送 note 失敗: {e}")
+        return (False, str(e), None)
+
 @app.route('/api/boards/<board_id>/notes/<note_id>/resend', methods=['POST'])
 def resend_board_note(board_id, note_id):
     """重新發送 note (僅限 status 為 LoRa sent 的 note)"""
@@ -3031,8 +3247,6 @@ def resend_board_note(board_id, note_id):
     has_access, error_response, status_code = verify_channel_access(board_id)
     if not has_access:
         return error_response, status_code
-    
-    global interface, lora_connected, pending_ack, FLAG_DEVICE_WAITING_ACK
     
     if FLAG_DEVICE_WAITING_ACK:
         return jsonify({
@@ -3059,130 +3273,39 @@ def resend_board_note(board_id, note_id):
                     'error': 'Not authorized as admin'
                 }), 403
         
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT note_id, status, author_key, body, bg_color, lora_msg_id, reply_lora_msg_id, resent_count, is_pined_note
-            FROM notes 
-            WHERE note_id = ? AND board_id = ? AND deleted = 0
-        ''', (note_id, board_id))
-        
-        result = cursor.fetchone()
-        if not result:
+        # 非管理者需驗證是否為作者本人
+        if not is_admin:
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT author_key FROM notes WHERE note_id = ? AND board_id = ? AND deleted = 0', (note_id, board_id))
+            result = cursor.fetchone()
             conn.close()
-            return jsonify({
-                'success': False,
-                'error': 'Note not found'
-            }), 404
+            if not result:
+                return jsonify({'success': False, 'error': 'Note not found'}), 404
+            if result['author_key'] != author_key:
+                return jsonify({'success': False, 'error': 'Not authorized to resend this note'}), 403
         
-        status = result['status']
-        db_author_key = result['author_key']
-        body = result['body']
-        bg_color = result['bg_color']
-        lora_msg_id = result['lora_msg_id']
-        reply_lora_msg_id = result['reply_lora_msg_id']
-        resent_count = result['resent_count']
-        is_pined_note = result['is_pined_note']
+        success, message, resent_count = _execute_resend_note(board_id, note_id, triggered_by='user')
         
-        if status != 'LoRa sent':
-            conn.close()
-            return jsonify({
-                'success': False,
-                'error': 'Only LoRa sent notes can be resent'
-            }), 403
-        
-        # 如果不是管理者，則檢查是否為作者本人
-        if not is_admin and db_author_key != author_key:
-            conn.close()
-            return jsonify({
-                'success': False,
-                'error': 'Not authorized to resend this note'
-            }), 403
-        
-        if not lora_msg_id:
-            conn.close()
-            return jsonify({
-                'success': False,
-                'error': 'Note has no lora_msg_id'
-            }), 400
-        
-        # 更新 resent_count
-        timestamp = int(time.time() * 1000)
-        cursor.execute('''
-            UPDATE notes 
-            SET resent_count = resent_count + 1, updated_at = ?
-            WHERE note_id = ?
-        ''', (timestamp, note_id))
-        conn.commit()
-        conn.close()
-        
-        # 根據是否為回覆決定使用 /msg 或 /reply 指令
-        try:
-            channel_index = get_channel_index(interface, board_id)
-            
-            # 取得 color_id
-            color_id = get_color_index_from_palette(bg_color)
-            
-            if reply_lora_msg_id:
-                # 是回覆，使用 /reply 指令 (含 color_id 與 author_key)
-                msg = f"/reply <{lora_msg_id},{color_id},{db_author_key}>[{reply_lora_msg_id}]{body}"
-                print(f"[重新發送] 使用 /reply 指令 (含 color_id 與 author_key): {msg}")
-            else:
-                # 不是回覆，使用 /msg 指令 (含 color_id 與 author_key)
-                msg = f"/msg [{lora_msg_id},{color_id},{db_author_key}]{body}"
-                print(f"[重新發送] 使用 /msg 指令 (含 color_id 與 author_key): {msg}")
-            
-            interface.sendText(msg, channelIndex=channel_index)
-            print(f"  -> 已發送重新發送命令 (note_id={note_id}, resent_count={resent_count + 1})")
-            print(f"  -> color_id={color_id}, author_key={db_author_key} 已在訊息中一併發送")
-            
-            # 如果該 note 有 is_pined_note = true，延遲 15 秒後發送 /pin 命令
-            if is_pined_note == 1:
-                def send_pin_command():
-                    try:
-                        pin_cmd = f"/pin [{lora_msg_id}]{db_author_key}"
-                        interface.sendText(pin_cmd, channelIndex=channel_index)
-                        print(f"  -> [延遲 15 秒後] 已發送 pin 命令: {pin_cmd}")
-                    except Exception as e:
-                        print(f"  -> [延遲 15 秒後] 發送 pin 命令失敗: {e}")
-                
-                eventlet.spawn_after(15, send_pin_command)
-                print(f"  -> 已排程在 15 秒後發送 pin 命令")
-            
-            socketio.emit('refresh_notes', {'board_id': board_id})
-            update_epaper_display()
-            
+        if success:
             return jsonify({
                 'success': True,
                 'note_id': note_id,
                 'board_id': board_id,
-                'resent_count': resent_count + 1
+                'resent_count': resent_count
             }), 200
-            
-        except Exception as e:
-            error_str = str(e)
-            print(f"[重新發送] 發送失敗: {e}")
-            import traceback
-            traceback.print_exc()
-            
-            # 檢測 USB 連線異常
-            if "Timed out waiting for connection completion" in error_str or \
-               "device disconnected" in error_str or \
-               "裝置路徑" in error_str and "已消失" in error_str:
-                error_msg = "連線失敗：USB連線異常中斷，可能是 Pi 電力供應不足、更換線材、或 Mesh 裝置需要重啟"
-                print(f"[resend_board_note] {error_msg}")
-                lora_connected = False
-                socketio.emit('usb_connection_error', {'message': error_msg})
-                socketio.emit('lora_status', {'online': False, 'channel_validated': False, 'error_message': None, 'power_issue': False})
-                update_epaper_display()
-            
+        else:
+            status_code = 400
+            if 'not connected' in message or '忙碌' in message:
+                status_code = 503
+            elif 'not found' in message.lower():
+                status_code = 404
             return jsonify({
                 'success': False,
-                'error': f'Failed to send: {str(e)}'
-            }), 500
-        
+                'error': message
+            }), status_code
+    
     except Exception as e:
         print(f"重新發送 note 失敗: {e}")
         return jsonify({
@@ -4306,9 +4429,9 @@ def index():
     return render_template(
         'index.html',
         app_meta={
-            'service_name': NOTEBOARD_SERVICE_NAME,
-            'page_title': NOTEBOARD_SERVICE_NAME,
-            'project_name': APP_PROJECT_NAME,
+            'serviceName': NOTEBOARD_SERVICE_NAME,
+            'pageTitle': NOTEBOARD_SERVICE_NAME,
+            'projectName': APP_PROJECT_NAME,
             'version': APP_VERSION
         }
     )

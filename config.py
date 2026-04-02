@@ -1,8 +1,14 @@
 LOCAL_APP = "noteboard"
 
+# SEND_INTERVAL_SECOND: 排程器的執行間隔（秒），控制 LAN only 留言自動發送至 LoRa 的頻率。
+#   建議設定在 30~180 秒之間，過短可能造成 LoRa 頻寬阻塞。
 SEND_INTERVAL_SECOND = 30
+# ACK_TIMEOUT_SECONDS: 等待 LoRa ACK 回覆的超時時間（秒）。
+#   發送留言後若在此時間內未收到 ACK，留言狀態會從 Sending 回退為 LAN only，等待下次排程重新發送。
 ACK_TIMEOUT_SECONDS = 60
 
+# NOTEBOARD_SERVICE_NAME: 服務顯示名稱，用於網頁標題與 ePaper 頁面標題。
+#   可自訂為符合應用場景的名稱，例如："社區公佈欄"、"活動留言板"。
 NOTEBOARD_SERVICE_NAME = "Mesh資訊站"
 
 # 單一頻道設定（舊版格式，不再使用，可直接使用新版格式的頻道設定）
@@ -33,6 +39,18 @@ BOARD_MESSAGE_CHANNELS = [
 # False（預設）：輸入一次密碼後，該頻道的認證狀態會持續保留
 # True：離開頻道後認證狀態會被清除，下次進入需重新輸入密碼
 REAUTH_ON_CHANNEL_SWITCH = False
+
+# 自動補發功能參數
+# 系統會在每次排程週期中，自動檢查是否有留言需要重新發送，以確保所有節點都能收到留言。
+# AUTO_RESEND_NODE: 期望收到 ACK 的節點數量。預設為 0 停用自動補發功能。
+#   當某則留言收到的 ACK 數量少於此值時，該留言會自動補發，直到達到期望的節點數量。
+#
+# AUTO_RESEND_MIN_MINUTE: 留言建立後的最短等待時間（分鐘），避免剛發送的留言立即被重發。
+# AUTO_RESEND_MAX_MINUTE: 留言建立後的最長有效時間（分鐘），超過此時間的留言不再自動重發。
+
+AUTO_RESEND_NODE=0
+AUTO_RESEND_MIN_MINUTE=2
+AUTO_RESEND_MAX_MINUTE=60
 
 # ePaper 模組設定
 # 設定 ePaper 模組 ID，若未設定或為空則不使用 ePaper 功能

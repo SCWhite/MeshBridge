@@ -7,7 +7,7 @@ const DEFAULT_BOARD_ID = 'YourChannelName'
 const APP_META = (typeof window !== 'undefined' && window.APP_META) ? window.APP_META : {}
 const APP_SERVICE_NAME = APP_META.serviceName || 'Mesh資訊站'
 const APP_PROJECT_NAME = APP_META.projectName || 'meshBridge/meshNoteboard'
-const APP_VERSION = APP_META.version || 'v0.5.0'
+const APP_VERSION = APP_META.version || '-'
 
 const COLOR_PALETTE = [
   'hsl(0, 70%, 85%)',      // 0: Red

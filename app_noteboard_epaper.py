@@ -140,10 +140,6 @@ def capture_epaper_screenshot(url, width, height, color_mode):
         temp_path = image_dir / EPAPER_TEMP_SCREENSHOT
         output_path = image_dir / EPAPER_OUTPUT_IMAGE
         
-        print(f'[ePaper] 開始擷取網頁截圖: {url}')
-        print(f'[ePaper] 目標尺寸: {width}x{height}, 顏色模式: {color_mode}')
-        print(f'[ePaper] 暫存路徑: {temp_path}')
-        print(f'[ePaper] 輸出路徑: {output_path}')
         
         # 使用 chromium 命令行工具擷取截圖
         import subprocess
@@ -154,7 +150,6 @@ def capture_epaper_screenshot(url, width, height, color_mode):
         for cmd in ['chromium', 'chromium-browser', 'google-chrome']:
             if shutil.which(cmd):
                 chromium_bin = cmd
-                print(f'[ePaper] 找到 Chromium: {cmd}')
                 break
         
         if not chromium_bin:
@@ -186,8 +181,6 @@ def capture_epaper_screenshot(url, width, height, color_mode):
             url
         ]
         
-        print(f'[ePaper] 執行 Chromium 截圖命令...')
-        print(f'[ePaper] 命令: {chromium_bin} --headless ... {url}')
         
         try:
             # 設定環境變數以支援中文字型
@@ -206,7 +199,7 @@ def capture_epaper_screenshot(url, width, height, color_mode):
             )
             
             if result.returncode == 0:
-                print(f'[ePaper] Chromium 截圖完成')
+                pass
             else:
                 print(f'[ePaper] Chromium 返回錯誤碼: {result.returncode}')
                 if result.stderr:
@@ -214,8 +207,7 @@ def capture_epaper_screenshot(url, width, height, color_mode):
             
             # 檢查檔案是否存在
             if temp_path.exists():
-                file_size = temp_path.stat().st_size
-                print(f'[ePaper] 截圖已儲存，檔案大小: {file_size} bytes')
+                pass
             else:
                 print(f'[ePaper] 錯誤：截圖檔案不存在')
                 return None
@@ -233,7 +225,6 @@ def capture_epaper_screenshot(url, width, height, color_mode):
             traceback.print_exc()
             return None
         
-        print(f'[ePaper] 截圖完成，開始處理圖片...')
         
         # 檢查暫存檔是否存在
         if not temp_path.exists():
@@ -241,7 +232,6 @@ def capture_epaper_screenshot(url, width, height, color_mode):
         
         # 使用 PIL 處理圖片
         img = Image.open(temp_path)
-        print(f'[ePaper] 原始截圖尺寸: {img.size}')
         
         # 超取樣後縮放回目標尺寸
         if img.size != (width, height):
@@ -250,7 +240,6 @@ def capture_epaper_screenshot(url, width, height, color_mode):
                 img = img.crop((0, 0, img.width, int(height * (img.width / width))))
             # LANCZOS 縮放回目標尺寸，保留最佳文字邊緣品質
             img = img.resize((width, height), Image.Resampling.LANCZOS)
-            print(f'[ePaper] 超取樣縮放至目標尺寸: {width}x{height}')
         
         # 根據顏色模式處理圖片
         if color_mode == 'mono':
@@ -260,7 +249,6 @@ def capture_epaper_screenshot(url, width, height, color_mode):
             img = img.convert('L')  # 先轉灰階
             img = img.filter(ImageFilter.SHARPEN)  # 銳化，讓文字邊緣更清晰
             img = img.convert('1')  # Floyd-Steinberg dithering（PIL 預設）
-            print(f'[ePaper] 已轉換為黑白模式（銳化 + Floyd-Steinberg）')
         elif color_mode == 'dual_rb':
             # 紅黑雙色模式（簡化處理：保留紅色和黑色）
             img = img.convert('RGB')
@@ -275,11 +263,9 @@ def capture_epaper_screenshot(url, width, height, color_mode):
                         pixels[x, y] = (0, 0, 0)  # 純黑
                     else:
                         pixels[x, y] = (255, 255, 255)  # 純白
-            print(f'[ePaper] 已轉換為紅黑雙色模式')
         else:  # full_color
             # 保持全彩
             img = img.convert('RGB')
-            print(f'[ePaper] 保持全彩模式')
         
         # 儲存處理後的圖片
         img.save(output_path)
@@ -432,7 +418,6 @@ def _do_epaper_update(epaper_config):
         full_url = f'http://localhost{display_page_url}'
         
         # 等待 Flask 應用程式就緒（最多重試 3 次）
-        print(f'[ePaper] 檢查 Flask 應用程式是否可訪問...')
         import urllib.request
         import urllib.error
         
@@ -443,7 +428,6 @@ def _do_epaper_update(epaper_config):
         for attempt in range(max_retries):
             try:
                 with urllib.request.urlopen('http://localhost/', timeout=5) as response:
-                    print(f'[ePaper] Flask 應用程式可訪問，狀態碼: {response.status}')
                     flask_ready = True
                     break
             except Exception as check_error:

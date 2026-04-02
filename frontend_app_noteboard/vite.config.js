@@ -43,6 +43,10 @@ export default defineConfig({
                 }
               )
               
+              content = content.replace(
+                '<div id="root">',
+                '<script>window.APP_META = {{ app_meta | tojson }};</script>\n    <div id="root">'
+              )
               writeFileSync(templateTargetPath, content)
               console.log('✓ Moved index.html to templates/app_noteboard/ with Flask url_for syntax')
             } else if (file.endsWith('.js') || file.endsWith('.css')) {

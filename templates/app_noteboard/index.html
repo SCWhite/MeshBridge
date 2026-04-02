@@ -6,10 +6,11 @@
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <title>MeshBridge 佈告欄</title>
-  <script type="module" src="{{ url_for('static', filename='main.js') }}?v=1774400377246"></script>
-  <link rel="stylesheet" href="{{ url_for('static', filename='main.css') }}?v=1774400377246">
+  <script type="module" src="{{ url_for('static', filename='main.js') }}?v=1775031381783"></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='main.css') }}?v=1775031381783">
 </head>
 <body>
+    <script>window.APP_META = {{ app_meta | tojson }};</script>
     <div id="root"></div>
 </body>
 </html>
