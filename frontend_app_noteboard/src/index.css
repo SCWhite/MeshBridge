@@ -178,11 +178,35 @@ header.header-hidden {
   flex: 1;
   overflow-y: visible;
   padding: 20px;
-  padding-top: 80px;
+  padding-top: 70px;
   padding-bottom: 60px;
   background: #f5f5f5;
   display: flex;
   flex-direction: column;
+}
+
+.noteboard-container.mapview-mode {
+  padding: 0;
+  position: fixed;
+  top: 50px;
+  bottom: 34px;
+  left: 0;
+  right: 0;
+  overflow: hidden;
+  touch-action: none;
+  overscroll-behavior: none;
+}
+
+.noteboard-container.tableview-mode {
+  padding: 0;
+  position: fixed;
+  top: 50px;
+  bottom: 34px;
+  left: 0;
+  right: 0;
+  overflow: hidden;
+  touch-action: none;
+  overscroll-behavior: none;
 }
 
 .filter-bar {
@@ -349,6 +373,48 @@ header.header-hidden {
 
 .filter-checkbox:hover input[type="checkbox"]:not(:disabled) {
   transform: scale(1.1);
+}
+
+.filter-advanced-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 2px solid #dfe6e9;
+  border-radius: 8px;
+  background: white;
+  color: #636e72;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.filter-advanced-toggle:hover:not(:disabled) {
+  border-color: #2c3e50;
+  color: #2c3e50;
+}
+
+.filter-advanced-toggle.active {
+  border-color: #3498db;
+  color: #3498db;
+  background: #ebf5fb;
+}
+
+.filter-advanced-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.filter-advanced-panel {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .notes-grid {
@@ -739,11 +805,1003 @@ header.header-hidden {
 }
 
 .footer-left {
-  font-family: monospace;
+  display: flex;
+  align-items: center;
 }
 
 .footer-right {
   font-weight: bold;
+}
+
+.view-mode-tabs {
+  display: flex;
+  gap: 2px;
+  background: #e0e0e0;
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.view-mode-tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 26px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #999;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  padding: 0;
+}
+
+.view-mode-tab:hover {
+  background: rgba(255, 255, 255, 0.5);
+  color: #555;
+}
+
+.view-mode-tab.active {
+  background: white;
+  color: #2c3e50;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+.view-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 300px;
+  color: #95a5a6;
+  gap: 12px;
+}
+
+.view-placeholder-title {
+  font-size: 1.2em;
+  font-weight: 600;
+  color: #7f8c8d;
+}
+
+.view-placeholder-desc {
+  font-size: 0.9em;
+  color: #bdc3c7;
+}
+
+/* ===== TableView styles ===== */
+.tv-wrapper {
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  top: 56px;
+  left: 0;
+  right: 0;
+  bottom: 76px; /* 34px app-footer + 42px tv-sheet-tabs */
+  background: #fff;
+  transition: top 0.3s ease-in-out;
+}
+
+.tv-wrapper.header-visible {
+  top: 58px;
+}
+
+.tv-wrapper.header-hidden {
+  top: 0;
+}
+
+.tv-grid-area {
+  flex: 1;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  min-height: 0;
+  overscroll-behavior: contain;
+  touch-action: pan-x pan-y;
+}
+
+.tv-grid {
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.tv-grid th,
+.tv-grid td {
+  border: 1px solid #d0d0d0;
+  padding: 4px 8px;
+  height: 36px;
+  line-height: 1.4;
+  font-size: 20px;
+  vertical-align: middle;
+}
+
+.tv-grid td.tv-cell {
+  white-space: normal;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  cursor: default;
+}
+
+.tv-grid .tv-corner {
+  position: sticky;
+  left: 0;
+  top: 0;
+  z-index: 3;
+  background: #9e9e9e;
+  color: #fff;
+  width: var(--row-header-width, 36px);
+  min-width: var(--row-header-width, 36px);
+  max-width: var(--row-header-width, 36px);
+}
+
+.tv-grid thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  text-align: center;
+  user-select: none;
+  padding-top: 10px;
+  background: #9e9e9e;
+  text-align: center;
+  font-weight: 300;
+  color: #fff;
+  cursor: pointer;
+}
+
+.tv-grid .tv-row-header {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: #9e9e9e;
+  text-align: center;
+  font-weight: 300;
+  color: #fff;
+  width: var(--row-header-width, 36px);
+  min-width: var(--row-header-width, 36px);
+  max-width: var(--row-header-width, 36px);
+  user-select: none;
+  cursor: pointer;
+}
+
+/* Row/Column highlight */
+.tv-grid thead th.tv-hl-active,
+.tv-grid .tv-row-header.tv-hl-active {
+  background: #7baaf7;
+}
+
+.tv-cell.tv-cell-hl {
+  background-image: linear-gradient(rgba(255, 255, 255, 0.4), rgba(255, 255, 255, 0.4));
+}
+
+.tv-cell.tv-cell-hl-nobg {
+  background-image: linear-gradient(rgba(66, 133, 244, 0.1), rgba(66, 133, 244, 0.1));
+}
+
+.tv-sheet-tabs {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 40px; /* above app-footer */
+  height: 42px;
+  display: flex;
+  align-items: stretch;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  background: #e8e8e8;
+  border-top: 1px solid #d0d0d0;
+  z-index: 10;
+  scrollbar-width: thin;
+}
+
+.tv-sheet-tabs::-webkit-scrollbar {
+  height: 4px;
+}
+
+.tv-sheet-tabs::-webkit-scrollbar-thumb {
+  background: #bbb;
+  border-radius: 2px;
+}
+
+/* Send countdown timer - right aligned in sheet tabs */
+.tv-send-countdown {
+  margin-left: auto;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 12px;
+  font-size: 11px;
+  color: #e65100;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.tv-countdown-icon {
+  flex-shrink: 0;
+  stroke: #e65100;
+}
+
+.tv-countdown-time {
+  font-variant-numeric: tabular-nums;
+  font-family: monospace;
+  letter-spacing: 0.5px;
+}
+
+.tv-tab {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px;
+  min-width: 60px;
+  max-width: 180px;
+  font-size: 13px;
+  color: #5f6368;
+  background: #e8e8e8;
+  border: none;
+  border-right: 1px solid #d0d0d0;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 0.15s, color 0.15s;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tv-tab:active {
+  opacity: 0.7;
+}
+
+.tv-tab.is-active {
+  background: #fff;
+  color: #1a73e8;
+  font-weight: 600;
+  border-bottom: 2px solid #1a73e8;
+}
+
+.tv-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 300px;
+  gap: 20px;
+  padding: 32px;
+  text-align: center;
+}
+
+.tv-empty-icon {
+  opacity: 0.55;
+  margin-bottom: -4px;
+}
+
+.tv-empty-msg {
+  font-size: 16px;
+  color: #5f6368;
+  line-height: 1.6;
+}
+
+/* Blank rows area */
+.tv-blank-row {
+  background: #fafafa;
+}
+
+.tv-blank-row .tv-blank-header {
+  background: #bdbdbd;
+}
+
+.tv-blank-row .tv-blank-cell {
+  background: #fafafa;
+  border-color: #e0e0e0;
+}
+
+.tv-add-row-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: 0 auto;
+  border: none;
+  border-radius: 4px;
+  background: #1a73e8;
+  color: #fff;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.tv-add-row-btn:hover {
+  background: #1557b0;
+}
+
+.tv-add-row-btn:active {
+  background: #0d47a1;
+}
+
+/* Blank column header and add column button */
+.tv-blank-col-header {
+  background: #bdbdbd !important;
+}
+
+.tv-add-col-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: 0 auto;
+  border: none;
+  border-radius: 4px;
+  background: #1a73e8;
+  color: #fff;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.tv-add-col-btn:hover {
+  background: #1557b0;
+}
+
+.tv-add-col-btn:active {
+  background: #0d47a1;
+}
+
+.tv-empty-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 10px 24px;
+  font-size: 15px;
+  font-weight: 500;
+  color: #fff;
+  background: #1a73e8;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: opacity 0.15s;
+}
+
+.tv-empty-btn:active {
+  opacity: 0.7;
+}
+
+.tv-empty-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Sheet tab with edit button */
+.tv-tab {
+  gap: 6px;
+}
+
+.tv-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tv-tab-edit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #9e9e9e;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tv-tab-edit-btn:hover {
+  background: rgba(0, 0, 0, 0.08);
+  color: #5f6368;
+}
+
+.tv-tab.is-active .tv-tab-edit-btn {
+  color: #1a73e8;
+}
+
+.tv-tab.is-active .tv-tab-edit-btn:hover {
+  background: rgba(26, 115, 232, 0.12);
+}
+
+.tv-tab-edit-btn:active {
+  transform: scale(0.9);
+}
+
+.tv-tab-delete-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #9e9e9e;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tv-tab-delete-btn:hover {
+  background: rgba(211, 47, 47, 0.1);
+  color: #d32f2f;
+}
+
+.tv-tab.is-active .tv-tab-delete-btn {
+  color: #9e9e9e;
+}
+
+.tv-tab.is-active .tv-tab-delete-btn:hover {
+  background: rgba(211, 47, 47, 0.12);
+  color: #d32f2f;
+}
+
+.tv-tab-delete-btn:active {
+  transform: scale(0.9);
+}
+
+.tv-tab-delete-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Add sheet tab [+] button */
+.tv-tab-add {
+  min-width: 42px;
+  max-width: 42px;
+  padding: 0;
+  color: #5f6368;
+  border-right: none;
+}
+
+.tv-tab-add:hover {
+  background: #d8d8d8;
+  color: #1a73e8;
+}
+
+/* Sheet name modal */
+.tv-sheet-modal-label {
+  display: block;
+  font-size: 0.9em;
+  font-weight: 600;
+  color: #2c3e50;
+  margin-bottom: 8px;
+}
+
+.tv-sheet-name-input {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 1em;
+}
+
+/* TableView passcode error */
+.tv-passcode-error {
+  color: #e74c3c;
+  font-size: 0.85em;
+  margin-top: 6px;
+}
+
+/* ===== TableView cell editing ===== */
+.tv-cell-editing {
+  z-index: 5;
+  outline: 2px solid #1a73e8;
+  outline-offset: -1px;
+  padding: 0 !important;
+}
+
+.tv-cell-input {
+  width: 100%;
+  height: 100%;
+  min-height: 60px;
+  border: none;
+  outline: none;
+  font-size: inherit;
+  font-family: inherit;
+  line-height: inherit;
+  padding: 4px 8px;
+  box-sizing: border-box;
+  resize: vertical;
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.tv-cell-toolbar {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  right: -2px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: #fff;
+  border: 1px solid #d0d0d0;
+  border-radius: 6px;
+  padding: 4px 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  z-index: 10;
+  white-space: nowrap;
+}
+
+.tv-toolbar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 15px;
+  transition: background 0.15s, transform 0.1s;
+}
+
+.tv-toolbar-btn:active {
+  transform: scale(0.9);
+}
+
+.tv-toolbar-confirm {
+  background: #2ecc71;
+  color: #fff;
+  font-weight: bold;
+}
+
+.tv-toolbar-confirm:hover {
+  background: #27ae60;
+}
+
+.tv-toolbar-confirm:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tv-toolbar-cancel {
+  background: #bdc3c7;
+  color: #fff;
+  font-weight: bold;
+}
+
+.tv-toolbar-cancel:hover {
+  background: #95a5a6;
+}
+
+.tv-toolbar-color {
+  background: rgba(155, 89, 182, 0.15);
+}
+
+.tv-toolbar-color:hover {
+  background: rgba(155, 89, 182, 0.3);
+}
+
+.tv-toolbar-color-wrapper {
+  position: relative;
+}
+
+.tv-color-dropdown {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  padding: 8px;
+  background: #fff;
+  border: 1px solid #d0d0d0;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  z-index: 20;
+  width: 160px;
+}
+
+.tv-color-dropdown.drop-down {
+  bottom: auto;
+  top: calc(100% + 6px);
+}
+
+.tv-color-option {
+  width: 32px;
+  height: 32px;
+  border-radius: 4px;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: all 0.15s;
+  box-sizing: border-box;
+}
+
+.tv-color-option:hover {
+  transform: scale(1.15);
+  border-color: rgba(0, 0, 0, 0.3);
+}
+
+.tv-color-option.selected {
+  border-color: #2c3e50;
+  border-width: 3px;
+  transform: scale(1.15);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+@media (max-width: 600px) {
+  .tv-grid th,
+  .tv-grid td {
+    font-size: 18px;
+    padding: 3px 6px;
+    height: 34px;
+  }
+
+  .tv-tab {
+    font-size: 13px;
+    padding: 0 12px;
+    max-width: 120px;
+  }
+
+  .tv-grid .tv-corner,
+  .tv-grid .tv-row-header {
+    width: 38px;
+    min-width: 38px;
+    max-width: 38px;
+  }
+
+  .tv-toolbar-btn {
+    width: 28px;
+    height: 28px;
+    font-size: 14px;
+  }
+
+  .tv-color-dropdown {
+    width: 140px;
+  }
+
+  .tv-color-option {
+    width: 28px;
+    height: 28px;
+  }
+
+  .tv-tab-add {
+    min-width: 38px;
+    max-width: 38px;
+  }
+
+  .tv-tab-edit-btn {
+    width: 18px;
+    height: 18px;
+  }
+
+  .tv-tab-delete-btn {
+    width: 18px;
+    height: 18px;
+  }
+}
+
+/* ===== MapView styles ===== */
+.mapview-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  touch-action: none;
+  overscroll-behavior: none;
+}
+
+.mapview-map {
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.mapview-marker-wrapper {
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.mapview-note-card {
+  position: relative;
+  max-width: 220px;
+  min-width: 90px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  font-size: 14px;
+  line-height: 1.5;
+  color: #333;
+  word-break: break-word;
+  pointer-events: auto;
+}
+
+.mapview-note-card:hover {
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35);
+  transform: scale(1.03);
+  transition: all 0.15s ease;
+}
+
+.mapview-note-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mapview-note-time {
+  margin-top: 3px;
+  font-size: 10px;
+  color: rgba(0, 0, 0, 0.4);
+  white-space: nowrap;
+}
+
+.mapview-note-arrow {
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 8px solid #fffde7;
+  filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.15));
+}
+
+.mapview-note-arrow.arrow-up {
+  border-top: none;
+  border-bottom: 8px solid #fffde7;
+  filter: drop-shadow(0 -2px 2px rgba(0, 0, 0, 0.15));
+}
+
+.mapview-stack-badge {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #2c3e50;
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+}
+
+.mapview-stack-shadow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 6px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  pointer-events: none;
+  z-index: -1;
+}
+
+.mapview-hub {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  z-index: 50;
+  pointer-events: auto;
+}
+
+.mapview-center-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #222;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+.mapview-collapse-btn {
+  background: rgba(255, 255, 255, 0.75);
+  color: #333;
+  padding: 3px 10px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  white-space: nowrap;
+  pointer-events: auto;
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.mapview-collapse-btn:hover {
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.mapview-lines-wrapper {
+  pointer-events: none;
+  z-index: 0;
+}
+
+.mapview-lines-svg {
+  pointer-events: none;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.mapview-expanded-note {
+  transition: opacity 0.2s ease;
+}
+
+.mapview-goto-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #666;
+  background: rgba(255, 255, 255, 0.6);
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+  z-index: 5;
+  pointer-events: auto;
+}
+
+.mapview-note-card:hover .mapview-goto-btn {
+  opacity: 1;
+}
+
+.mapview-goto-btn:hover {
+  background: rgba(52, 152, 219, 0.15);
+  color: #2980b9;
+}
+
+.sticky-note.note-highlight {
+  animation: noteHighlightPulse 2s ease;
+}
+
+@keyframes noteHighlightPulse {
+  0%, 100% { box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+  15%, 45% { box-shadow: 0 0 0 4px rgba(52, 152, 219, 0.5), 0 2px 12px rgba(52, 152, 219, 0.3); }
+  30% { box-shadow: 0 0 0 6px rgba(52, 152, 219, 0.3), 0 2px 16px rgba(52, 152, 219, 0.2); }
+}
+
+.mapview-empty-hint {
+  position: absolute;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.6);
+  color: white;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 13px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* Long-press progress ring animation */
+.mapview-progress-ring {
+  position: absolute;
+  pointer-events: none;
+  z-index: 1000;
+  transform: rotate(-90deg);
+}
+
+.mapview-progress-ring svg {
+  width: 100%;
+  height: 100%;
+}
+
+.mapview-progress-ring .ring-bg {
+  fill: none;
+  stroke: rgba(44, 62, 80, 0.2);
+  stroke-width: 6;
+}
+
+.mapview-progress-ring .ring-progress {
+  fill: none;
+  stroke: #2c3e50;
+  stroke-width: 6;
+  stroke-linecap: round;
+  stroke-dasharray: 283; /* 2 * PI * 45 */
+  stroke-dashoffset: 283;
+  transition: none;
+}
+
+.mapview-progress-ring.animating .ring-progress {
+  stroke-dashoffset: 0;
+  transition: stroke-dashoffset var(--duration, 1500ms) linear;
+}
+
+/* Long-press popup for creating notes from map */
+.maplibregl-popup:has(.mapview-longpress-popup) {
+  z-index: 1001 !important;
+}
+
+.mapview-longpress-marker {
+  width: 16px;
+  height: 16px;
+  background: #2c3e50;
+  border: 3px solid white;
+  border-radius: 50%;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+.mapview-longpress-popup {
+  padding: 4px 2px;
+  text-align: center;
+  min-width: 140px;
+}
+
+.mapview-longpress-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #2c3e50;
+  margin-bottom: 4px;
+}
+
+.mapview-longpress-coords {
+  font-size: 11px;
+  color: #7f8c8d;
+  margin-bottom: 10px;
+  font-family: monospace;
+}
+
+.mapview-longpress-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+.mapview-longpress-btn {
+  padding: 6px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mapview-longpress-btn-cancel {
+  background: #ecf0f1;
+  color: #7f8c8d;
+}
+
+.mapview-longpress-btn-cancel:hover {
+  background: #dfe6e9;
+}
+
+.mapview-longpress-btn-create {
+  background: #2c3e50;
+  color: white;
+}
+
+.mapview-longpress-btn-create:hover {
+  background: #34495e;
+}
+
+.mapview-longpress-btn:active {
+  transform: scale(0.95);
 }
 
 .fab {
@@ -1381,21 +2439,49 @@ header.header-hidden {
 
   .noteboard-container {
     padding: 12px;
-    padding-top: 90px;
+    padding-top: 75px;
     padding-bottom: 100px;
+  }
+
+  .noteboard-container.mapview-mode {
+    padding: 0;
+    position: fixed;
+    top: 65px;
+    bottom: 36px;
+    left: 0;
+    right: 0;
+    overflow: hidden;
+    touch-action: none;
+    overscroll-behavior: none;
   }
 
   .filter-bar {
     padding: 12px 16px;
-    gap: 12px;
-    flex-direction: column;
-    align-items: stretch;
+    gap: 8px 12px;
   }
 
   .filter-group {
     flex-direction: column;
     align-items: stretch;
     gap: 6px;
+  }
+
+  .filter-group:first-child {
+    flex-basis: 100%;
+  }
+
+  .filter-group:nth-child(2) {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .filter-group:nth-child(3) {
+    flex-direction: row;
+    align-self: flex-end;
+  }
+
+  .filter-advanced-panel {
+    flex-basis: 100%;
   }
 
   .filter-label {

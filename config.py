@@ -19,19 +19,19 @@ NOTEBOARD_SERVICE_NAME = "Mesh資訊站"
 # NOTEBOARD_POST_PASSCODE = "1234"
 
 # 多頻道設定（新功能）
-# 格式：[{"name": "頻道名稱", "user_passcode": "進入密碼", "admin_passcode": "管理密碼", "post_passcode": "發文密碼", "max_notes": 數量 , "max_archived_notes": 數量}, ...]
+# 格式：[{"name": "頻道名稱", "user_passcode": "進入密碼", "admin_passcode": "管理密碼", "post_passcode": "發文密碼", "max_notes": 便利貼數量上限，超過會自動封存 , "max_archived_notes": 封存的便利貼檢視數量上限}, ...]
 # 每個頻道可設定獨立的密碼與顯示數量
 
 BOARD_MESSAGE_CHANNELS = [
     {
         "name": "MQBoardTest",
         "user_passcode": "", "admin_passcode": "667788", "post_passcode": "",
-        "max_notes": 200, "max_archived_notes": 200
+        "max_notes": 100, "max_archived_notes": 500
     },
     {
         "name": "TeamAlpha",
         "user_passcode": "1234", "admin_passcode": "998877", "post_passcode": "5678",
-        "max_notes": 200, "max_archived_notes": 200
+        "max_notes": 100, "max_archived_notes": 500
     }
 ]
 
@@ -51,6 +51,10 @@ REAUTH_ON_CHANNEL_SWITCH = False
 AUTO_RESEND_NODE=0
 AUTO_RESEND_MIN_MINUTE=2
 AUTO_RESEND_MAX_MINUTE=60
+
+# 裝置連線時，自動用主機時間更新設備時間
+# 建議在 Raspberry Pi 有安裝 RTC 模組 (eg. DS3231)並有正確設定時間時，可啟用此功能
+UPDATE_LORA_DEVICE_TIME_FROM_LOCAL = False
 
 # ePaper 模組設定
 # 設定 ePaper 模組 ID，若未設定或為空則不使用 ePaper 功能

@@ -24,7 +24,7 @@ print(f"[系統] 使用多頻道設定: {[ch['name'] for ch in BOARD_MESSAGE_CHA
 CONFIGURED_CHANNEL_NAMES = [ch['name'] for ch in BOARD_MESSAGE_CHANNELS]
 NOTEBOARD_MBTILES_FOLDER = getattr(config, 'NOTEBOARD_MBTILES_FOLDER', './maps')
 NOTEBOARD_MBTILES_LAYER_MODE = getattr(config, 'NOTEBOARD_MBTILES_LAYER_MODE', 'auto')
-APP_VERSION = "v0.6.1"
+APP_VERSION = "v0.7.0"
 APP_PROJECT_NAME = "meshBridge/meshNoteboard"
 NOTEBOARD_SERVICE_NAME = getattr(
     config,
@@ -33,6 +33,7 @@ NOTEBOARD_SERVICE_NAME = getattr(
 )
 EPAPER_CONNECT_NOTE = getattr(config, 'EPAPER_CONNECT_NOTE', '即可檢視更多訊息。')
 REAUTH_ON_CHANNEL_SWITCH = getattr(config, 'REAUTH_ON_CHANNEL_SWITCH', False)
+UPDATE_LORA_DEVICE_TIME_FROM_LOCAL = getattr(config, 'UPDATE_LORA_DEVICE_TIME_FROM_LOCAL', False)
 
 # 自動重送機制參數
 _auto_resend_node_raw = getattr(config, 'AUTO_RESEND_NODE', 0)
@@ -187,7 +188,7 @@ COLOR_PALETTE = [
     'hsl(0, 0%, 85%)',       # 12: Light Gray
     'hsl(0, 0%, 75%)',       # 13: Gray
     'hsl(45, 80%, 85%)',     # 14: Gold
-    'hsl(15, 80%, 85%)'      # 15: Coral
+    'hsl(0, 0%, 100%)'       # 15: White
 ]
 
 def _build_epaper_default_profile():
@@ -338,6 +339,73 @@ def generate_user_uuid():
     return ''.join(random.choice(alphabet) for _ in range(8))
 
 MAC_RE = re.compile(r"lladdr\s+([0-9a-f:]{17})", re.I)
+SHEET_DELETE_RE = re.compile(r'^\{([a-z0-9]{6}):delete\}$')
+SHEET_TITLE_RE = re.compile(r'^\{([a-z0-9]{6}):title\}([\s\S]*)$')
+TABLE_CELL_RE = re.compile(r'^\{([a-z0-9]{6}):((?:[A-Z][1-9]\d{0,2})|title)\}([\s\S]*)$', re.DOTALL)
+
+def _is_table_format_note(body):
+    """判斷 note body 是否為 table 資料格式（TABLE_CELL_RE 或 SHEET_DELETE_RE）"""
+    return bool(TABLE_CELL_RE.match(body)) or bool(SHEET_DELETE_RE.match(body))
+
+def auto_archive_old_notes(cursor, board_id, ch_max_notes):
+    """自動封存超過 max_notes 的舊留言
+    
+    規則：
+    - 只計算『沒有 table 指令』且『非置頂』的 notes 數量
+    - 只封存『沒有 table 指令』且『非置頂』的最舊 notes
+    - table 指令的 note 和置頂的 note 完全不受此機制影響
+    """
+    timestamp = int(time.time() * 1000)
+    
+    # 計算非 table 指令、非置頂、未刪除的 notes 數量
+    # 使用 NOT 排除 table 格式的 body（匹配 {xxxxxx:...} 開頭）
+    cursor.execute('''
+        SELECT COUNT(*) FROM notes 
+        WHERE board_id = ? AND deleted = 0 AND is_pined_note = 0
+          AND body NOT GLOB '{[a-z0-9][a-z0-9][a-z0-9][a-z0-9][a-z0-9][a-z0-9]:*'
+    ''', (board_id,))
+    count = cursor.fetchone()[0]
+    
+    if count > ch_max_notes:
+        overflow = count - ch_max_notes
+        cursor.execute('''
+            UPDATE notes 
+            SET deleted = 1, updated_at = ?
+            WHERE note_id IN (
+                SELECT note_id FROM notes 
+                WHERE board_id = ? AND deleted = 0 AND is_pined_note = 0
+                  AND body NOT GLOB '{[a-z0-9][a-z0-9][a-z0-9][a-z0-9][a-z0-9][a-z0-9]:*'
+                ORDER BY created_at ASC 
+                LIMIT ?
+            )
+        ''', (timestamp, board_id, overflow))
+        archived_count = cursor.rowcount
+        if archived_count > 0:
+            print(f"[自動封存] board_id={board_id}: 封存了 {archived_count} 筆舊留言 (非table指令, 非置頂)")
+
+def sheet_id_exists_in_db(sheet_id):
+    """檢查 sheet_id 是否已存在於資料庫的任何 note body 中（包含 deleted 及所有指令類型）"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        pattern = '{' + sheet_id + ':%'
+        cursor.execute('SELECT COUNT(*) FROM notes WHERE body LIKE ?', (pattern,))
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count > 0
+    except Exception as e:
+        print(f"檢查 sheet_id 是否存在失敗: {e}")
+        return False
+
+def generate_unique_sheet_id():
+    """產生不重複的 6 字元 sheet_id"""
+    import random
+    chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
+    for _ in range(100):
+        sheet_id = ''.join(random.choice(chars) for _ in range(6))
+        if not sheet_id_exists_in_db(sheet_id):
+            return sheet_id
+    raise Exception("無法產生唯一的 sheet_id（已嘗試 100 次）")
 
 def mac_from_ip(ip: str, iface: str = "wlan0") -> str | None:
     """從 IP 取得 MAC address (移除冒號)"""
@@ -621,6 +689,36 @@ def archive_note_by_lora_msg_id(lora_msg_id, author_key):
         print(f"封存 note 失敗: {e}")
         return False
 
+def mark_sheet_notes_deleted(board_id, sheet_id, exclude_note_id=None):
+    """將指定 sheetId 的所有 notes 標記為 deleted（排除指定的 note_id）"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        timestamp = int(time.time() * 1000)
+        pattern = '{' + sheet_id + ':%'
+
+        if exclude_note_id:
+            cursor.execute('''
+                UPDATE notes 
+                SET deleted = 1, updated_at = ?
+                WHERE board_id = ? AND body LIKE ? AND note_id != ? AND deleted = 0
+            ''', (timestamp, board_id, pattern, exclude_note_id))
+        else:
+            cursor.execute('''
+                UPDATE notes 
+                SET deleted = 1, updated_at = ?
+                WHERE board_id = ? AND body LIKE ? AND deleted = 0
+            ''', (timestamp, board_id, pattern))
+
+        affected_rows = cursor.rowcount
+        conn.commit()
+        conn.close()
+        print(f"[刪除工作表] 已將 {affected_rows} 筆 sheetId={sheet_id} 的 notes 標記為 deleted (board_id={board_id})")
+        return affected_rows
+    except Exception as e:
+        print(f"刪除工作表 notes 失敗: {e}")
+        return 0
+
 def pin_note_by_lora_msg_id(lora_msg_id, author_key):
     """透過 lora_msg_id 將 note 標記為置頂 (is_pined_note=1)，需驗證 author_key 和 lora_msg_id 存在"""
     try:
@@ -694,6 +792,10 @@ def save_lora_note(lora_msg_id, board_id, body, bg_color='', author_key='', repl
                              created_at, updated_at, author_key, rev, deleted, lora_msg_id, lora_node_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
         ''', (note_id, reply_lora_msg_id, board_id, body, bg_color, status, timestamp, timestamp, author_key, lora_msg_id, lora_node_id))
+        
+        ch_cfg = get_channel_config(board_id)
+        ch_max_notes = ch_cfg.get('max_notes', MAX_NOTES)
+        auto_archive_old_notes(cursor, board_id, ch_max_notes)
         
         conn.commit()
         conn.close()
@@ -830,28 +932,57 @@ def get_notes_from_db(board_id, include_deleted=False):
         ch_cfg = get_channel_config(board_id)
         max_notes = ch_cfg.get('max_notes', 200)
         max_archived = ch_cfg.get('max_archived_notes', 200)
-        limit = (max_notes + max_archived) if include_deleted else max_notes
+        
+        # 分開查詢：非 table 指令的 notes 與 table 指令的 notes
+        # table 指令的 body 匹配 {xxxxxx:...} 格式
+        table_glob = '{[a-z0-9][a-z0-9][a-z0-9][a-z0-9][a-z0-9][a-z0-9]:*'
         
         if include_deleted:
+            non_table_limit = max_notes + max_archived
+            table_limit = max_notes + max_archived
+            # 非 table 指令 notes
             cursor.execute('''
                 SELECT note_id, reply_lora_msg_id, body, bg_color, status, 
                        created_at, updated_at, author_key, rev, deleted, lora_msg_id, is_temp_parent_note, is_pined_note, lora_node_id
                 FROM notes 
-                WHERE board_id = ?
+                WHERE board_id = ? AND body NOT GLOB ?
+                ORDER BY is_pined_note DESC, created_at DESC
+                LIMIT ?
+            ''', (board_id, table_glob, non_table_limit))
+            non_table_rows = cursor.fetchall()
+            # table 指令 notes
+            cursor.execute('''
+                SELECT note_id, reply_lora_msg_id, body, bg_color, status, 
+                       created_at, updated_at, author_key, rev, deleted, lora_msg_id, is_temp_parent_note, is_pined_note, lora_node_id
+                FROM notes 
+                WHERE board_id = ? AND body GLOB ?
                 ORDER BY created_at DESC
                 LIMIT ?
-            ''', (board_id, limit))
+            ''', (board_id, table_glob, table_limit))
+            table_rows = cursor.fetchall()
         else:
+            # 非 table 指令 notes（未刪除）
             cursor.execute('''
                 SELECT note_id, reply_lora_msg_id, body, bg_color, status, 
                        created_at, updated_at, author_key, rev, deleted, lora_msg_id, is_temp_parent_note, is_pined_note, lora_node_id
                 FROM notes 
-                WHERE board_id = ? AND deleted = 0
+                WHERE board_id = ? AND deleted = 0 AND body NOT GLOB ?
+                ORDER BY is_pined_note DESC, created_at DESC
+                LIMIT ?
+            ''', (board_id, table_glob, max_notes))
+            non_table_rows = cursor.fetchall()
+            # table 指令 notes（未刪除）
+            cursor.execute('''
+                SELECT note_id, reply_lora_msg_id, body, bg_color, status, 
+                       created_at, updated_at, author_key, rev, deleted, lora_msg_id, is_temp_parent_note, is_pined_note, lora_node_id
+                FROM notes 
+                WHERE board_id = ? AND deleted = 0 AND body GLOB ?
                 ORDER BY created_at DESC
                 LIMIT ?
-            ''', (board_id, limit))
+            ''', (board_id, table_glob, max_notes))
+            table_rows = cursor.fetchall()
         
-        rows = cursor.fetchall()
+        rows = list(non_table_rows) + list(table_rows)
         notes = []
         for row in rows:
             created_time = format_note_time(row['created_at'])
@@ -1000,7 +1131,6 @@ def onReceive(packet, interface):
                         print(f"  -> 更新 lora_msg_id 失敗: {e}")
                     
                     socketio.emit('refresh_notes', {'board_id': note_info.get('board_id', BOARD_MESSAGE_CHANNELS[0]['name'])})
-                    update_epaper_display()
                 
                 del pending_ack[request_id]
         
@@ -1045,6 +1175,7 @@ def onReceive(packet, interface):
                 print("-" * 60)
             
             should_refresh = False
+            is_table_note = False
             
             if msg.startswith('/msg [new,') and ']' in msg:
                 # 新格式: /msg [new,color_id,author_key]body
@@ -1069,8 +1200,15 @@ def onReceive(packet, interface):
                         lora_node_id=lora_uuid
                     ):
                         should_refresh = True
+                        if _is_table_format_note(body):
+                            is_table_note = True
                         print(f"  -> 已儲存訊息 (含 color_id={color_id}, author_key={author_key})，將在 60 秒後發送 USER ACK 命令")
                         eventlet.spawn_after(60, send_ack_delayed, lora_msg_id, interface, channel_name)
+                        # 偵測工作表刪除指令
+                        _sd_m = SHEET_DELETE_RE.match(body)
+                        if _sd_m:
+                            _sd_nid = get_note_id_by_lora_msg_id(lora_msg_id)
+                            mark_sheet_notes_deleted(channel_name, _sd_m.group(1), exclude_note_id=_sd_nid)
                 else:
                     print(f"  -> 格式錯誤，應為 /msg [new,color_id,author_key]body")
                     
@@ -1086,8 +1224,15 @@ def onReceive(packet, interface):
                     lora_node_id=lora_uuid
                 ):
                     should_refresh = True
+                    if _is_table_format_note(body):
+                        is_table_note = True
                     print(f"  -> 已儲存訊息，將在 60 秒後發送 USER ACK 命令")
                     eventlet.spawn_after(60, send_ack_delayed, lora_msg_id, interface, channel_name)
+                    # 偵測工作表刪除指令
+                    _sd_m = SHEET_DELETE_RE.match(body)
+                    if _sd_m:
+                        _sd_nid = get_note_id_by_lora_msg_id(lora_msg_id)
+                        mark_sheet_notes_deleted(channel_name, _sd_m.group(1), exclude_note_id=_sd_nid)
                     
             elif msg.startswith('/msg [') and ']' in msg:
                 end_bracket = msg.index(']')
@@ -1115,9 +1260,16 @@ def onReceive(packet, interface):
                                 lora_node_id=lora_uuid
                             ):
                                 should_refresh = True
+                                if _is_table_format_note(body):
+                                    is_table_note = True
                                 print(f"[重發訊息寫入資料庫成功] lora_msg_id={resend_lora_msg_id}, body={body}")
                                 print(f"  -> 已儲存訊息 (含 color_id={color_id}, author_key={author_key})，將在 60 秒後發送 USER ACK 命令")
                                 eventlet.spawn_after(60, send_ack_delayed, resend_lora_msg_id, interface, channel_name)
+                                # 偵測工作表刪除指令
+                                _sd_m = SHEET_DELETE_RE.match(body)
+                                if _sd_m:
+                                    _sd_nid = get_note_id_by_lora_msg_id(resend_lora_msg_id)
+                                    mark_sheet_notes_deleted(channel_name, _sd_m.group(1), exclude_note_id=_sd_nid)
                                 # 更新以此訊息為父訊息的回覆，將 is_temp_parent_note 設為 0
                                 try:
                                     conn = sqlite3.connect(DB_PATH)
@@ -1154,9 +1306,16 @@ def onReceive(packet, interface):
                             lora_node_id=lora_uuid
                         ):
                             should_refresh = True
+                            if _is_table_format_note(body):
+                                is_table_note = True
                             print(f"[重發訊息寫入資料庫成功] lora_msg_id={resend_lora_msg_id}, body={body}")
                             print(f"  -> 已儲存訊息，將在 60 秒後發送 USER ACK 命令")
                             eventlet.spawn_after(60, send_ack_delayed, resend_lora_msg_id, interface, channel_name)
+                            # 偵測工作表刪除指令
+                            _sd_m = SHEET_DELETE_RE.match(body)
+                            if _sd_m:
+                                _sd_nid = get_note_id_by_lora_msg_id(resend_lora_msg_id)
+                                mark_sheet_notes_deleted(channel_name, _sd_m.group(1), exclude_note_id=_sd_nid)
                             # 更新以此訊息為父訊息的回覆，將 is_temp_parent_note 設為 0
                             try:
                                 conn = sqlite3.connect(DB_PATH)
@@ -1292,6 +1451,9 @@ def onReceive(packet, interface):
                         ''', (reply_note_id, reply_lora_msg_id, channel_name, body, bg_color, status, 
                               timestamp, timestamp, author_key, lora_msg_id, is_temp_parent, lora_uuid))
                         
+                        ch_cfg = get_channel_config(channel_name)
+                        auto_archive_old_notes(cursor, channel_name, ch_cfg.get('max_notes', MAX_NOTES))
+                        
                         conn.commit()
                         conn.close()
                         should_refresh = True
@@ -1331,6 +1493,9 @@ def onReceive(packet, interface):
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?)
                     ''', (reply_note_id, reply_lora_msg_id, channel_name, body, '', status, 
                           timestamp, timestamp, '', lora_msg_id, is_temp_parent, lora_uuid))
+                    
+                    ch_cfg = get_channel_config(channel_name)
+                    auto_archive_old_notes(cursor, channel_name, ch_cfg.get('max_notes', MAX_NOTES))
                     
                     conn.commit()
                     conn.close()
@@ -1391,6 +1556,9 @@ def onReceive(packet, interface):
                                     ''', (reply_note_id, reply_lora_msg_id, channel_name, body, bg_color, status, 
                                           timestamp, timestamp, author_key, resend_lora_msg_id, is_temp_parent, lora_uuid))
                                     
+                                    ch_cfg = get_channel_config(channel_name)
+                                    auto_archive_old_notes(cursor, channel_name, ch_cfg.get('max_notes', MAX_NOTES))
+                                    
                                     conn.commit()
                                     
                                     # 更新以此回覆為父訊息的其他回覆，將 is_temp_parent_note 設為 0
@@ -1447,6 +1615,9 @@ def onReceive(packet, interface):
                                 ''', (reply_note_id, reply_lora_msg_id, channel_name, body, '', status, 
                                       timestamp, timestamp, '', resend_lora_msg_id, is_temp_parent, lora_uuid))
                                 
+                                ch_cfg = get_channel_config(channel_name)
+                                auto_archive_old_notes(cursor, channel_name, ch_cfg.get('max_notes', MAX_NOTES))
+                                
                                 conn.commit()
                                 
                                 # 更新以此回覆為父訊息的其他回覆，將 is_temp_parent_note 設為 0
@@ -1479,7 +1650,8 @@ def onReceive(packet, interface):
             
             if should_refresh:
                 socketio.emit('refresh_notes', {'board_id': channel_name})
-                update_epaper_display()
+                if not is_table_note:
+                    update_epaper_display()
                 
     except Exception as e:
         print(f"Packet Error: {e}")
@@ -1519,7 +1691,6 @@ def check_ack_timeout():
         if update_note_status(note_id, 'LAN only'):
             print(f"  -> 更新 note {note_id} 狀態為 'LAN only'")
             socketio.emit('refresh_notes', {'board_id': info.get('board_id', BOARD_MESSAGE_CHANNELS[0]['name'])})
-            update_epaper_display()
         
         del pending_ack[request_id]
 
@@ -1636,7 +1807,6 @@ def send_scheduler_loop():
                             update_note_status(note['note_id'], 'Sending')
                             print(f"  -> 已發送訊息，等待 ACK (request_id={request_id})")
                             socketio.emit('refresh_notes', {'board_id': ch_name})
-                            update_epaper_display()
                             FLAG_DEVICE_WAITING_ACK = True
                         else:
                             print(f"  -> 已發送訊息，但無 request_id")
@@ -1724,7 +1894,8 @@ def send_scheduler_loop():
                             else:
                                 print(f"[自動重送] 重送失敗 note_id={c_note_id}: {message}")
                         else:
-                            print(f"[自動重送] 本次無符合條件的 note 需要重送")
+                            # print(f"[自動重送] 本次無符合條件的 note 需要重送")
+                            pass
                 
                 except Exception as e:
                     print(f"[自動重送] 處理異常: {e}")
@@ -1791,6 +1962,25 @@ def validate_channel_name(interface):
         active_channels = []
         channel_validated = False
         return (False, error_msg)
+
+def set_device_time_from_local(iface):
+    """連線成功後，用本機時間設定 LoRa 裝置時間"""
+    if not UPDATE_LORA_DEVICE_TIME_FROM_LOCAL:
+        print(f"[設備時間] 未啟用自動設定設備時間 (UPDATE_LORA_DEVICE_TIME_FROM_LOCAL=False)")
+        return
+    # 防呆：本機時間必須在 2026/1/1 之後
+    now_ts = int(time.time())
+    threshold_ts = int(datetime(2026, 1, 1).timestamp())
+    if now_ts < threshold_ts:
+        local_time_str = datetime.fromtimestamp(now_ts).strftime('%Y-%m-%d %H:%M:%S')
+        print(f"[設備時間] 本機時間異常 ({local_time_str})，早於 2026/1/1，跳過設定設備時間")
+        return
+    try:
+        iface.localNode.setTime(now_ts)
+        local_time_str = datetime.fromtimestamp(now_ts).strftime('%Y-%m-%d %H:%M:%S')
+        print(f"[設備時間] 已用本機時間設定設備時間: {local_time_str} (epoch={now_ts})")
+    except Exception as e:
+        print(f"[設備時間] 設定設備時間失敗: {e}")
 
 def mesh_loop():
     global interface, current_dev_path, lora_connected, channel_validated, active_channels, deviceLastPosition, isDeviceProvideLocation, FLAG_DEVICE_WAITING_ACK
@@ -1972,6 +2162,8 @@ def mesh_loop():
                     
                     eventlet.sleep(2)
                     
+                    set_device_time_from_local(interface)
+                    
                     is_channel_valid, error_msg = validate_channel_name(interface)
                     
                     lora_connected = True
@@ -2072,6 +2264,23 @@ def get_features_config():
             'success': False,
             'error': str(e)
         }), 500
+
+@app.route('/api/global/lan-only-count', methods=['GET'])
+def get_global_lan_only_count():
+    """取得所有 board 中 LAN only 狀態的 note 數量（未刪除）"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT COUNT(*) FROM notes
+            WHERE status = 'LAN only' AND deleted = 0
+        ''')
+        count = cursor.fetchone()[0]
+        conn.close()
+        return jsonify({'success': True, 'count': count})
+    except Exception as e:
+        print(f"取得全域 LAN only 數量失敗: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/config/post_passcode_required', methods=['GET'])
 def get_post_passcode_required():
@@ -2400,6 +2609,133 @@ def logout_admin():
             'error': str(e)
         }), 500
 
+@app.route('/api/boards/<board_id>/table-base', methods=['GET'])
+def get_table_base(board_id):
+    """取得 max_notes 筆『有 table 指令』notes 之前的舊 table 資料，處理成資料表格式回傳（用於 TableView 基礎資料）"""
+    has_access, error_response, status_code = verify_channel_access(board_id)
+    if not has_access:
+        return error_response, status_code
+
+    try:
+        ch_cfg = get_channel_config(board_id)
+        max_notes = ch_cfg.get('max_notes', 200)
+        table_glob = '{[a-z0-9][a-z0-9][a-z0-9][a-z0-9][a-z0-9][a-z0-9]:*'
+
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # 取得最新 max_notes 筆『有 table 指令』的 note_id 集合（這些由 /notes API 回傳，需排除）
+        cursor.execute('''
+            SELECT note_id FROM notes
+            WHERE board_id = ? AND deleted = 0 AND body GLOB ?
+            ORDER BY created_at DESC
+            LIMIT ?
+        ''', (board_id, table_glob, max_notes))
+        recent_table_ids = set(r['note_id'] for r in cursor.fetchall())
+
+        # 計算需要處理的舊 table 資料總筆數
+        cursor.execute('''
+            SELECT COUNT(*) as cnt FROM notes 
+            WHERE board_id = ? AND deleted = 0 AND body GLOB ?
+        ''', (board_id, table_glob))
+        total_table_count = cursor.fetchone()['cnt']
+        old_count = total_table_count - len(recent_table_ids)
+
+        if old_count <= 0:
+            conn.close()
+            return jsonify({'success': True, 'cells': [], 'titles': {}, 'count': 0})
+
+        # 以 dict 累積每個 sheet 的 cell 資料，新資料覆蓋舊資料（同一格以較新的為準）
+        # key: (sheetId, cellId)  value: {content, bg_color}
+        sheet_cells = {}
+        sheet_titles = {}
+        deleted_sheets = set()
+
+        # 分段讀取舊的 table 指令資料，每次 1000 筆，避免一次載入過多資料
+        batch_size = 1000
+        batch_offset = 0
+
+        while True:
+            cursor.execute('''
+                SELECT note_id, body, bg_color, created_at FROM notes
+                WHERE board_id = ? AND deleted = 0 AND body GLOB ?
+                ORDER BY created_at ASC
+                LIMIT ? OFFSET ?
+            ''', (board_id, table_glob, batch_size, batch_offset))
+
+            rows = cursor.fetchall()
+            if not rows:
+                break
+
+            for row in rows:
+                # 跳過最新 max_notes 筆 table 指令（屬於前端 /notes 回傳範圍）
+                if row['note_id'] in recent_table_ids:
+                    continue
+
+                body = (row['body'] or '').strip()
+                bg_color = row['bg_color'] or ''
+
+                # 偵測工作表刪除指令
+                sd_m = SHEET_DELETE_RE.match(body)
+                if sd_m:
+                    sid = sd_m.group(1)
+                    deleted_sheets.add(sid)
+                    # 移除該 sheet 所有已累積的 cell 與 title
+                    keys_to_remove = [k for k in sheet_cells if k[0] == sid]
+                    for k in keys_to_remove:
+                        del sheet_cells[k]
+                    sheet_titles.pop(sid, None)
+                    continue
+
+                m = TABLE_CELL_RE.match(body)
+                if not m:
+                    continue
+
+                sheet_id = m.group(1)
+                cell_id = m.group(2)
+                content = m.group(3)
+
+                # 已被刪除的 sheetId 永久排除，不再接受任何資料
+                if sheet_id in deleted_sheets:
+                    continue
+
+                if cell_id == 'title':
+                    sheet_titles[sheet_id] = content.strip()
+                else:
+                    # cell_id 格式為 "A1"~"Z999"，拆分為 col index 與 row number
+                    col = ord(cell_id[0]) - 65  # A=0, B=1, ...
+                    row_num = int(cell_id[1:])
+                    sheet_cells[(sheet_id, cell_id)] = {
+                        's': sheet_id,
+                        'r': row_num,
+                        'c': col,
+                        't': content,
+                        'bg': bg_color
+                    }
+
+            # 如果本批次筆數不足 batch_size，代表已讀完全部
+            if len(rows) < batch_size:
+                break
+            batch_offset += batch_size
+
+        conn.close()
+        cells = list(sheet_cells.values())
+        return jsonify({
+            'success': True,
+            'cells': cells,
+            'titles': sheet_titles,
+            'deleted_sheets': list(deleted_sheets),
+            'count': len(cells)
+        })
+
+    except Exception as e:
+        print(f"取得 table base 資料失敗: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
 @app.route('/api/boards/<board_id>/notes', methods=['GET'])
 def get_board_notes(board_id):
     """取得指定 board 的所有 notes，包含 reply_notes 階層結構"""
@@ -2583,6 +2919,22 @@ def create_board_note(board_id):
                     'error': '發送用通關碼錯誤'
                 }), 403
         
+        # 新建立工作表時，確保 sheet_id 不與資料庫中已存在的重複
+        final_sheet_id = None
+        is_new_sheet = data.get('is_new_sheet', False)
+        if is_new_sheet:
+            title_m = SHEET_TITLE_RE.match(text)
+            if title_m:
+                original_sheet_id = title_m.group(1)
+                title_content = title_m.group(2)
+                if sheet_id_exists_in_db(original_sheet_id):
+                    new_sheet_id = generate_unique_sheet_id()
+                    text = '{' + new_sheet_id + ':title}' + title_content
+                    final_sheet_id = new_sheet_id
+                    print(f"[工作表] sheet_id 重複，已重新產生: {original_sheet_id} -> {new_sheet_id}")
+                else:
+                    final_sheet_id = original_sheet_id
+        
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         timestamp = int(time.time() * 1000)
@@ -2608,29 +2960,42 @@ def create_board_note(board_id):
                     'error': 'Parent note not found'
                 }), 404
         
+        # 資料欄位 cell 去重：若新 note 是 table cell 格式，刪除同一 cell 仍在 LAN only 的舊 note
+        cell_m = TABLE_CELL_RE.match(text)
+        if cell_m:
+            cell_prefix = '{' + cell_m.group(1) + ':' + cell_m.group(2) + '}'
+            cursor.execute('''
+                SELECT note_id FROM notes
+                WHERE board_id = ? AND body LIKE ? AND status = 'LAN only' AND deleted = 0
+            ''', (board_id, cell_prefix + '%'))
+            old_rows = cursor.fetchall()
+            if old_rows:
+                old_ids = [r[0] for r in old_rows]
+                placeholders = ','.join('?' * len(old_ids))
+                cursor.execute(f'''
+                    UPDATE notes SET deleted = 1, updated_at = ?
+                    WHERE note_id IN ({placeholders})
+                ''', [timestamp] + old_ids)
+                print(f"[table cell 去重] 已刪除 {len(old_ids)} 筆同 cell ({cell_prefix}) 的 LAN only 舊 note")
+
         cursor.execute('''
             INSERT INTO notes (note_id, reply_lora_msg_id, board_id, body, bg_color, status, 
                              created_at, updated_at, author_key, rev, deleted)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
         ''', (note_id, reply_lora_msg_id, board_id, text, bg_color, status, timestamp, timestamp, author_key))
         
-        cursor.execute('SELECT COUNT(*) FROM notes WHERE board_id = ? AND deleted = 0', (board_id,))
-        count = cursor.fetchone()[0]
-        
-        if count > MAX_NOTES:
-            cursor.execute('''
-                UPDATE notes 
-                SET deleted = 1, updated_at = ?
-                WHERE note_id IN (
-                    SELECT note_id FROM notes 
-                    WHERE board_id = ? AND deleted = 0
-                    ORDER BY created_at ASC 
-                    LIMIT ?
-                )
-            ''', (timestamp, board_id, count - MAX_NOTES))
+        ch_cfg = get_channel_config(board_id)
+        ch_max_notes = ch_cfg.get('max_notes', MAX_NOTES)
+        auto_archive_old_notes(cursor, board_id, ch_max_notes)
         
         conn.commit()
         conn.close()
+        
+        # 偵測工作表刪除指令：{sheetId:delete}
+        sheet_delete_m = SHEET_DELETE_RE.match(text)
+        if sheet_delete_m:
+            sheet_id = sheet_delete_m.group(1)
+            mark_sheet_notes_deleted(board_id, sheet_id, exclude_note_id=note_id)
         
         # 建立完整的 note 物件返回給前端
         created_time = format_note_time(timestamp)
@@ -2661,14 +3026,18 @@ def create_board_note(board_id):
         }
         
         socketio.emit('refresh_notes', {'board_id': board_id})
-        update_epaper_display()
+        if not _is_table_format_note(text):
+            update_epaper_display()
         
-        return jsonify({
+        resp = {
             'success': True,
             'note_id': note_id,
             'board_id': board_id,
             'note': note_obj
-        }), 201
+        }
+        if final_sheet_id:
+            resp['sheet_id'] = final_sheet_id
+        return jsonify(resp), 201
         
     except Exception as e:
         print(f"建立 note 失敗: {e}")
@@ -2741,7 +3110,8 @@ def update_board_note(board_id, note_id):
         conn.close()
         
         socketio.emit('refresh_notes', {'board_id': board_id})
-        update_epaper_display()
+        if not _is_table_format_note(text):
+            update_epaper_display()
         
         return jsonify({
             'success': True,
@@ -3739,8 +4109,7 @@ def get_multi_style():
                         "id": f"{source_id}-layer",
                         "type": "raster",
                         "source": source_id,
-                        "minzoom": ts['minzoom'],
-                        "maxzoom": ts['maxzoom'] + 1
+                        "minzoom": ts['minzoom']
                     })
                 else:
                     # Vector tiles 在縮放層級模式下，需要讀取實際的 layers
@@ -3823,7 +4192,8 @@ def get_style(tileset):
         # 建立 MapLibre style
         if is_raster:
             # Raster tiles style
-            # MapLibre 的 maxZoom 需要比 tile 的實際 maxzoom 多 1，才能正確顯示最大縮放層級
+            # source.maxzoom 定義 tile 資料的最大層級，MapLibre 會在超過此層級時自動 overzoom（放大顯示）
+            # layer 不設 maxzoom，讓 MapLibre 在任何 zoom level 都繼續渲染（避免白底）
             style = {
                 "version": 8,
                 "name": metadata.get('name', tileset),
@@ -3842,8 +4212,7 @@ def get_style(tileset):
                         "id": "raster-tiles",
                         "type": "raster",
                         "source": tileset,
-                        "minzoom": minzoom,
-                        "maxzoom": maxzoom
+                        "minzoom": minzoom
                     }
                 ]
             }
@@ -4328,6 +4697,7 @@ def build_epaper_display_notes(board_id, max_notes=3):
         if not note.get('archived')
         and not note.get('isTempParentNote')
         and note.get('replyLoraMessageId') is None
+        and not _is_table_format_note(note.get('text', ''))
     ]
     parent_notes.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
 
@@ -4432,7 +4802,8 @@ def index():
             'serviceName': NOTEBOARD_SERVICE_NAME,
             'pageTitle': NOTEBOARD_SERVICE_NAME,
             'projectName': APP_PROJECT_NAME,
-            'version': APP_VERSION
+            'version': APP_VERSION,
+            'sendIntervalSecond': SEND_INTERVAL_SECOND
         }
     )
 

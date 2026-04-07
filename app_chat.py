@@ -6,10 +6,17 @@ import sys
 import os
 import glob
 import logging
+from datetime import datetime
 from flask import Flask, render_template, request, redirect, url_for
 from flask_socketio import SocketIO, emit
 from meshtastic.serial_interface import SerialInterface
 from pubsub import pub
+
+try:
+    import config
+    UPDATE_LORA_DEVICE_TIME_FROM_LOCAL = getattr(config, 'UPDATE_LORA_DEVICE_TIME_FROM_LOCAL', False)
+except ImportError:
+    UPDATE_LORA_DEVICE_TIME_FROM_LOCAL = False
 
 # 抑制 Meshtastic 的 protobuf 解析錯誤日誌（這些是暫時性錯誤，不影響功能）
 logging.getLogger('meshtastic.mesh_interface').setLevel(logging.CRITICAL)
@@ -99,6 +106,25 @@ def scan_for_meshtastic():
         found_ports.extend(glob.glob(p))
     return found_ports[0] if found_ports else None
 
+def set_device_time_from_local(iface):
+    """連線成功後，用本機時間設定 LoRa 裝置時間"""
+    if not UPDATE_LORA_DEVICE_TIME_FROM_LOCAL:
+        print(f"[設備時間] 未啟用自動設定設備時間 (UPDATE_LORA_DEVICE_TIME_FROM_LOCAL=False)")
+        return
+    # 防呆：本機時間必須在 2026/1/1 之後
+    now_ts = int(time.time())
+    threshold_ts = int(datetime(2026, 1, 1).timestamp())
+    if now_ts < threshold_ts:
+        local_time_str = datetime.fromtimestamp(now_ts).strftime('%Y-%m-%d %H:%M:%S')
+        print(f"[設備時間] 本機時間異常 ({local_time_str})，早於 2026/1/1，跳過設定設備時間")
+        return
+    try:
+        iface.localNode.setTime(now_ts)
+        local_time_str = datetime.fromtimestamp(now_ts).strftime('%Y-%m-%d %H:%M:%S')
+        print(f"[設備時間] 已用本機時間設定設備時間: {local_time_str} (epoch={now_ts})")
+    except Exception as e:
+        print(f"[設備時間] 設定設備時間失敗: {e}")
+
 def mesh_loop():
     global interface, current_dev_path, lora_connected
     print("啟動 Meshtastic 自動偵測與監聽...")
@@ -173,6 +199,8 @@ def mesh_loop():
                         print(f"  -> 連線失敗，已達最大重試次數")
                         time.sleep(3)
                         continue
+                    
+                    set_device_time_from_local(interface)
                     
                     lora_connected = True
                     socketio.emit('lora_status', {'online': True})

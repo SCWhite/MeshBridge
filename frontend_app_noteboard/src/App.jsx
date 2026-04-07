@@ -2,12 +2,16 @@ import { useState, useEffect, useRef } from 'react'
 import { io } from 'socket.io-client'
 import LocationMap from './LocationMap'
 import LocationPicker from './LocationPicker'
+import MapView from './MapView'
+import TableView, { TABLE_CELL_RE } from './TableView'
+import mapInstanceManager from './MapInstanceManager'
 
 const DEFAULT_BOARD_ID = 'YourChannelName'
 const APP_META = (typeof window !== 'undefined' && window.APP_META) ? window.APP_META : {}
 const APP_SERVICE_NAME = APP_META.serviceName || 'Mesh資訊站'
 const APP_PROJECT_NAME = APP_META.projectName || 'meshBridge/meshNoteboard'
 const APP_VERSION = APP_META.version || '-'
+const SEND_INTERVAL_SECOND = APP_META.sendIntervalSecond || 30
 
 const COLOR_PALETTE = [
   'hsl(0, 70%, 85%)',      // 0: Red
@@ -25,7 +29,7 @@ const COLOR_PALETTE = [
   'hsl(0, 0%, 85%)',       // 12: Light Gray
   'hsl(0, 0%, 75%)',       // 13: Gray
   'hsl(45, 80%, 85%)',     // 14: Gold
-  'hsl(15, 80%, 85%)'      // 15: Coral
+  'hsl(0, 0%, 100%)'       // 15: White
 ]
 
 function randomCode8() {
@@ -82,6 +86,8 @@ function App() {
   const [sortOrder, setSortOrder] = useState('newest')
   const [keywordFilter, setKeywordFilter] = useState('')
   const [showArchived, setShowArchived] = useState(false)
+  const [showTableCommands, setShowTableCommands] = useState(false)
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
   const [headerVisible, setHeaderVisible] = useState(true)
   const lastScrollY = useRef(0)
   const draftNoteRef = useRef(null)
@@ -121,9 +127,15 @@ function App() {
   const [filterInputReadonly, setFilterInputReadonly] = useState(true)
   const [reauthOnChannelSwitch, setReauthOnChannelSwitch] = useState(false)
   const filterInputRef = useRef(null)
+  const channelSwitchRef = useRef(false)
+  const boardViewMemory = useRef({})
   const [isSubmittingDraft, setIsSubmittingDraft] = useState(false)
   const [isSubmittingReply, setIsSubmittingReply] = useState(false)
   const [isSubmittingEdit, setIsSubmittingEdit] = useState(false)
+  const [viewMode, setViewMode] = useState(() => {
+    try { return sessionStorage.getItem('viewMode') || 'sticky' } catch { return 'sticky' }
+  })
+  const [globalLanOnlyCount, setGlobalLanOnlyCount] = useState(0)
 
   // 根據當前 boardId 判斷是否為該頻道的管理者
   const isAdmin = adminChannels.includes(boardId)
@@ -152,7 +164,19 @@ function App() {
     fetchUserLastLocation()
   }, [myUUID])
 
-  const fetchNotes = async (includeDeleted = false, targetBoardId = null) => {
+  const fetchGlobalLanOnlyCount = async () => {
+    try {
+      const response = await fetch('/api/global/lan-only-count')
+      const data = await response.json()
+      if (data.success) {
+        setGlobalLanOnlyCount(data.count)
+      }
+    } catch (error) {
+      console.error('Failed to fetch global LAN-only count:', error)
+    }
+  }
+
+  const fetchNotes = async (includeDeleted = false, targetBoardId = null, autoSwitchView = false) => {
     try {
       const actualBoardId = targetBoardId || boardId
       const response = await fetch(`/api/boards/${actualBoardId}/notes?is_include_deleted=${includeDeleted}`)
@@ -160,6 +184,11 @@ function App() {
       if (data.success) {
         setNotes(data.notes)
         fetchAllAcks(data.notes, actualBoardId)
+        // Auto-switch view mode after channel switch
+        if (autoSwitchView) {
+          const remembered = boardViewMemory.current[actualBoardId]
+          setViewMode(remembered || 'sticky')
+        }
       }
     } catch (error) {
       console.error('Failed to fetch notes:', error)
@@ -314,6 +343,8 @@ function App() {
         }
       }
 
+      fetchGlobalLanOnlyCount()
+
       const newSocket = io()
       setSocket(newSocket)
 
@@ -376,6 +407,10 @@ function App() {
   }, [activeChannels])
 
   useEffect(() => {
+    try { sessionStorage.setItem('viewMode', viewMode) } catch {}
+  }, [viewMode])
+
+  useEffect(() => {
     if (!showChannelDropdown) return
     const handleClickOutside = (e) => {
       if (!e.target.closest('.header-left')) {
@@ -391,10 +426,10 @@ function App() {
 
     const handleRefreshNotes = (data) => {
       fetchNotes(showArchived, boardId)
+      fetchGlobalLanOnlyCount()
     }
 
     const handleAckReceived = (data) => {
-      console.log('ACK received:', data)
       if (data.note_id) {
         fetchAckForNote(data.note_id)
       }
@@ -424,7 +459,9 @@ function App() {
 
   useEffect(() => {
     if (boardId !== DEFAULT_BOARD_ID) {
-      fetchNotes(showArchived)
+      const autoSwitchView = channelSwitchRef.current
+      fetchNotes(showArchived, null, autoSwitchView)
+      channelSwitchRef.current = false
     }
   }, [showArchived, boardId])
 
@@ -523,6 +560,10 @@ function App() {
           })
           
           draftTextareaRef.current.focus()
+          // If text is pre-filled (e.g. from map), move cursor to beginning
+          if (draftTextareaRef.current.value) {
+            draftTextareaRef.current.setSelectionRange(0, 0)
+          }
         }
       }, 150)
     }
@@ -744,11 +785,12 @@ function App() {
     setNotes(newNotes)
   }
 
-  const handleCreateNote = () => {
+  const handleCreateNote = (initialText) => {
+    const text = (typeof initialText === 'string') ? initialText : ''
     setIsCreatingNote(true)
-    setDraftText('')
+    setDraftText(text)
     setDraftColorIndex(0)
-    setDraftByteCount(0)
+    setDraftByteCount(getUTF8ByteLength(text))
     setDraftPostPasscode('')
   }
 
@@ -768,7 +810,14 @@ function App() {
     setReplyPostPasscode('')
   }
 
+  const saveBoardView = () => {
+    boardViewMemory.current[boardId] = viewMode
+  }
+
   const handleChannelSwitch = async (channelName) => {
+    if (isCreatingNote) handleCancelDraft()
+    if (isReplyingTo) handleCancelReply()
+
     const status = channelVerifiedStatus[channelName]
     
     if (status && status.requiresPassword && !status.isVerified) {
@@ -791,6 +840,7 @@ function App() {
         })
         setAdminChannels(prev => prev.filter(ch => ch !== boardId))
       }
+      saveBoardView()
       setPendingChannel(channelName)
       setPasswordInput('')
       setPasswordError('')
@@ -819,6 +869,8 @@ function App() {
           })
           setAdminChannels(prev => prev.filter(ch => ch !== oldBoardId))
         }
+        saveBoardView()
+        channelSwitchRef.current = true
         setBoardId(channelName)
         setShowChannelDropdown(false)
       }
@@ -860,13 +912,12 @@ function App() {
         const selectData = await selectResponse.json()
         if (selectData.success) {
           const verifiedChannel = pendingChannel
+          saveBoardView()
+          channelSwitchRef.current = true
           setBoardId(verifiedChannel)
           setShowPasswordModal(false)
           setPendingChannel(null)
           setPasswordInput('')
-          
-          // 密碼驗證成功後自動載入 notes
-          await fetchNotes(showArchived, verifiedChannel)
         }
       } else {
         setPasswordError('密碼錯誤，請重試')
@@ -1239,6 +1290,13 @@ function App() {
 
   const getFilteredAndSortedNotes = () => {
     let filtered = notes.filter(note => {
+      if (!showTableCommands) {
+        const trimmed = (note.text || '').trim()
+        if (TABLE_CELL_RE.test(trimmed) || /^\{[a-z0-9]{6}:delete\}$/.test(trimmed)) {
+          return false
+        }
+      }
+
       if (keywordFilter.trim()) {
         const keyword = keywordFilter.toLowerCase()
         const parentText = (note.text || '').toLowerCase()
@@ -1620,7 +1678,7 @@ function App() {
                       }
                     }}
                   >
-                    {(ackData[data.noteId] && ackData[data.noteId].length) || 0}
+                    {(ackData[data.noteId] && ackData[data.noteId].length) || '-'}
                   </span>
                   <span
                     className="ack-counter-touch-overlay"
@@ -1679,7 +1737,7 @@ function App() {
                       }
                     }}
                   >
-                    {(ackData[data.noteId] && ackData[data.noteId].length) || 0}
+                    {(ackData[data.noteId] && ackData[data.noteId].length) || '-'}
                   </span>
                   <span
                     className="ack-counter-touch-overlay"
@@ -1953,154 +2011,280 @@ function App() {
         </div>
       </header>
 
-      <div className="noteboard-container">
-        <div className={`filter-bar ${isCreatingNote ? 'disabled' : ''}`}>
-          <div className="filter-group">
-            <label className="filter-label">排序：</label>
-            <select 
-              className="filter-select"
-              value={sortOrder}
-              onChange={(e) => setSortOrder(e.target.value)}
-              disabled={isCreatingNote}
-            >
-              <option value="newest">日期時間由新到舊</option>
-              <option value="oldest">日期時間由舊到新</option>
-              <option value="color">顏色</option>
-            </select>
-          </div>
+      <div className={`noteboard-container ${viewMode === 'map' ? 'mapview-mode' : viewMode === 'table' ? 'tableview-mode' : ''}`}>
+        {viewMode === 'sticky' && (
+          <>
+            <div className={`filter-bar ${isCreatingNote ? 'disabled' : ''}`}>
+              <div className="filter-group">
+                <label className="filter-label">排序：</label>
+                <select 
+                  className="filter-select"
+                  value={sortOrder}
+                  onChange={(e) => setSortOrder(e.target.value)}
+                  disabled={isCreatingNote}
+                >
+                  <option value="newest">日期時間由新到舊</option>
+                  <option value="oldest">日期時間由舊到新</option>
+                  <option value="color">顏色</option>
+                </select>
+              </div>
 
-          <div className="filter-group">
-            <label className="filter-label">關鍵字：</label>
-            <input
-              ref={filterInputRef}
-              type="text"
-              className="filter-input"
-              placeholder=""
-              value={keywordFilter}
-              onChange={(e) => setKeywordFilter(e.target.value)}
-              disabled={isCreatingNote}
-              readOnly={filterInputReadonly}
-              onClick={() => {
-                if (filterInputReadonly) {
-                  setFilterInputReadonly(false)
-                  setTimeout(() => {
-                    if (filterInputRef.current) {
-                      filterInputRef.current.focus()
+              <div className="filter-group">
+                <label className="filter-label">關鍵字：</label>
+                <input
+                  ref={filterInputRef}
+                  type="text"
+                  className="filter-input"
+                  placeholder=""
+                  value={keywordFilter}
+                  onChange={(e) => setKeywordFilter(e.target.value)}
+                  disabled={isCreatingNote}
+                  readOnly={filterInputReadonly}
+                  onClick={() => {
+                    if (filterInputReadonly) {
+                      setFilterInputReadonly(false)
+                      setTimeout(() => {
+                        if (filterInputRef.current) {
+                          filterInputRef.current.focus()
+                        }
+                      }, 0)
                     }
-                  }, 0)
-                }
-              }}
-            />
-            {keywordFilter && (
-              <button 
-                className="clear-btn"
-                onClick={() => setKeywordFilter('')}
-                disabled={isCreatingNote}
-              >
-                ✕
-              </button>
-            )}
-          </div>
-
-          <div className="filter-group">
-            <label className="filter-checkbox">
-              <input
-                type="checkbox"
-                checked={showArchived}
-                onChange={(e) => setShowArchived(e.target.checked)}
-                disabled={isCreatingNote}
-              />
-              <span>顯示已封存</span>
-            </label>
-          </div>
-        </div>
-
-        <div className="notes-grid">
-          {getFilteredAndSortedNotes().map((note, idx) => renderNoteWithReplies(note, idx))}
-          
-          {isCreatingNote && (
-            <div 
-              ref={draftNoteRef}
-              className="sticky-note draft-note"
-              style={{
-                backgroundColor: COLOR_PALETTE[draftColorIndex],
-                color: '#333'
-              }}
-            >
-              <div className="draft-header">張貼便利貼</div>
-              <textarea
-                ref={draftTextareaRef}
-                className="draft-textarea"
-                value={draftText}
-                onChange={handleDraftTextChange}
-                onCompositionStart={handleCompositionStart}
-                onCompositionEnd={(e) => handleCompositionEnd(e, false)}
-                placeholder="輸入內容..."
-                autoFocus
-              />
-              {mapEnabled && (
-                <div className="draft-tools">
+                  }}
+                />
+                {keywordFilter && (
                   <button 
-                    className="btn-location-picker"
-                    onClick={handleOpenLocationPicker}
-                    title="加入地圖座標"
+                    className="clear-btn"
+                    onClick={() => setKeywordFilter('')}
+                    disabled={isCreatingNote}
                   >
-                    📍 地圖座標
+                    ✕
                   </button>
+                )}
+              </div>
+
+              <div className="filter-group">
+                <button
+                  className={`filter-advanced-toggle ${showAdvancedFilters ? 'active' : ''}`}
+                  onClick={() => setShowAdvancedFilters(v => !v)}
+                  disabled={isCreatingNote}
+                  title="更多篩選"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+                  </svg>
+                </button>
+              </div>
+
+              {showAdvancedFilters && (
+                <div className="filter-advanced-panel">
+                  <label className="filter-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={showArchived}
+                      onChange={(e) => setShowArchived(e.target.checked)}
+                      disabled={isCreatingNote}
+                    />
+                    <span>顯示已封存</span>
+                  </label>
+                  <label className="filter-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={showTableCommands}
+                      onChange={(e) => setShowTableCommands(e.target.checked)}
+                      disabled={isCreatingNote}
+                    />
+                    <span>顯示表格指令</span>
+                  </label>
                 </div>
               )}
-              <div className="byte-counter-container">
-                <div className="byte-counter-bar">
-                  <div 
-                    className="byte-counter-fill"
-                    style={{ 
-                      width: `${Math.min((draftByteCount / MAX_BYTES) * 100, 100)}%`,
-                      backgroundColor: draftByteCount > MAX_BYTES ? '#d32f2f' : '#3498db'
-                    }}
-                  />
-                </div>
-                <div className="byte-counter-text" style={{ color: draftByteCount > MAX_BYTES ? '#d32f2f' : '#666' }}>
-                  {draftByteCount}/{MAX_BYTES}
-                </div>
-              </div>
-              <div className="color-picker">
-                {COLOR_PALETTE.map((color, index) => (
-                  <div
-                    key={index}
-                    className={`color-option ${draftColorIndex === index ? 'selected' : ''}`}
-                    style={{ backgroundColor: color }}
-                    onClick={() => setDraftColorIndex(index)}
-                  />
-                ))}
-              </div>
-              {!isAdmin && postPasscodeRequired && (
-                <div className="passcode-input-container">
-                  <input
-                    type="password"
-                    className="passcode-input"
-                    placeholder="發送用通關碼"
-                    value={draftPostPasscode}
-                    onChange={(e) => setDraftPostPasscode(e.target.value)}
-                  />
-                </div>
-              )}
-              <div className="draft-actions">
-                <button className="btn-cancel" onClick={handleCancelDraft}>取消</button>
-                <button className="btn-submit" onClick={handleSubmitDraft} disabled={isSubmittingDraft}>送出</button>
-              </div>
             </div>
-          )}
+
+            <div className="notes-grid">
+              {getFilteredAndSortedNotes().map((note, idx) => renderNoteWithReplies(note, idx))}
+              
+              {isCreatingNote && (
+                <div 
+                  ref={draftNoteRef}
+                  className="sticky-note draft-note"
+                  style={{
+                    backgroundColor: COLOR_PALETTE[draftColorIndex],
+                    color: '#333'
+                  }}
+                >
+                  <div className="draft-header">張貼便利貼</div>
+                  <textarea
+                    ref={draftTextareaRef}
+                    className="draft-textarea"
+                    value={draftText}
+                    onChange={handleDraftTextChange}
+                    onCompositionStart={handleCompositionStart}
+                    onCompositionEnd={(e) => handleCompositionEnd(e, false)}
+                    placeholder="輸入內容..."
+                    autoFocus
+                  />
+                  {mapEnabled && (
+                    <div className="draft-tools">
+                      <button 
+                        className="btn-location-picker"
+                        onClick={handleOpenLocationPicker}
+                        title="加入地圖座標"
+                      >
+                        📍 地圖座標
+                      </button>
+                    </div>
+                  )}
+                  <div className="byte-counter-container">
+                    <div className="byte-counter-bar">
+                      <div 
+                        className="byte-counter-fill"
+                        style={{ 
+                          width: `${Math.min((draftByteCount / MAX_BYTES) * 100, 100)}%`,
+                          backgroundColor: draftByteCount > MAX_BYTES ? '#d32f2f' : '#3498db'
+                        }}
+                      />
+                    </div>
+                    <div className="byte-counter-text" style={{ color: draftByteCount > MAX_BYTES ? '#d32f2f' : '#666' }}>
+                      {draftByteCount}/{MAX_BYTES}
+                    </div>
+                  </div>
+                  <div className="color-picker">
+                    {COLOR_PALETTE.map((color, index) => (
+                      <div
+                        key={index}
+                        className={`color-option ${draftColorIndex === index ? 'selected' : ''}`}
+                        style={{ backgroundColor: color }}
+                        onClick={() => setDraftColorIndex(index)}
+                      />
+                    ))}
+                  </div>
+                  {!isAdmin && postPasscodeRequired && (
+                    <div className="passcode-input-container">
+                      <input
+                        type="password"
+                        className="passcode-input"
+                        placeholder="發送用通關碼"
+                        value={draftPostPasscode}
+                        onChange={(e) => setDraftPostPasscode(e.target.value)}
+                      />
+                    </div>
+                  )}
+                  <div className="draft-actions">
+                    <button className="btn-cancel" onClick={handleCancelDraft}>取消</button>
+                    <button className="btn-submit" onClick={handleSubmitDraft} disabled={isSubmittingDraft}>送出</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        <div style={{ display: viewMode === 'map' ? 'contents' : 'none' }}>
+          <MapView
+            notes={notes}
+            boardId={boardId}
+            isActive={viewMode === 'map'}
+            onNavigateToNote={(noteId) => {
+              setViewMode('sticky')
+              // 切回 sticky view 後觸發地圖 slot 重新掃描
+              setTimeout(() => {
+                mapInstanceManager.triggerScan()
+                const el = noteRefs.current[noteId]
+                if (el) {
+                  el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  el.classList.add('note-highlight')
+                  setTimeout(() => el.classList.remove('note-highlight'), 2000)
+                }
+              }, 150)
+            }}
+            onCreateNoteFromMap={(lat, lng) => {
+              const coordStr = `@(${lat.toFixed(4)},${lng.toFixed(4)})`
+              setViewMode('sticky')
+              handleCreateNote(coordStr)
+              // 切回 sticky view 後觸發地圖 slot 重新掃描
+              setTimeout(() => mapInstanceManager.triggerScan(), 150)
+            }}
+          />
         </div>
+
+        {viewMode === 'table' && (
+          <TableView
+            notes={notes}
+            isActive={viewMode === 'table'}
+            headerVisible={headerVisible}
+            boardId={boardId}
+            myUUID={myUUID}
+            colorPalette={COLOR_PALETTE}
+            isAdmin={isAdmin}
+            postPasscodeRequired={postPasscodeRequired}
+            loraOnline={loraOnline}
+            sendIntervalSecond={SEND_INTERVAL_SECOND}
+            globalLanOnlyCount={globalLanOnlyCount}
+          />
+        )}
+
       </div>
 
-      {!isCreatingNote && !isReplyingTo && (
+      {viewMode === 'sticky' && !isCreatingNote && !isReplyingTo && (
         <button className="fab" onClick={handleCreateNote}>
           +
         </button>
       )}
 
       <footer className="app-footer">
-        <div className="footer-left">uid={myUUID}</div>
+        <div className="footer-left">
+          <div className="view-mode-tabs">
+            <button
+              className={`view-mode-tab ${viewMode === 'sticky' ? 'active' : ''}`}
+              onClick={() => {
+                if (isCreatingNote) handleCancelDraft()
+                if (isReplyingTo) handleCancelReply()
+                setViewMode('sticky')
+                // 切回 sticky view 後觸發地圖 slot 重新掃描
+                setTimeout(() => mapInstanceManager.triggerScan(), 150)
+              }}
+              title="便利貼模式"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="7" height="7" rx="1" />
+                <rect x="14" y="3" width="7" height="7" rx="1" />
+                <rect x="3" y="14" width="7" height="7" rx="1" />
+                <rect x="14" y="14" width="7" height="7" rx="1" />
+              </svg>
+            </button>
+            {mapEnabled && (
+            <button
+              className={`view-mode-tab ${viewMode === 'map' ? 'active' : ''}`}
+              onClick={() => {
+                if (isCreatingNote) handleCancelDraft()
+                if (isReplyingTo) handleCancelReply()
+                setViewMode('map')
+              }}
+              title="地圖模式"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" />
+                <circle cx="12" cy="9" r="2.5" />
+              </svg>
+            </button>
+            )}
+            <button
+              className={`view-mode-tab ${viewMode === 'table' ? 'active' : ''}`}
+              onClick={() => {
+                if (isCreatingNote) handleCancelDraft()
+                if (isReplyingTo) handleCancelReply()
+                setViewMode('table')
+              }}
+              title="表格模式"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="1" />
+                <line x1="3" y1="9" x2="21" y2="9" />
+                <line x1="3" y1="15" x2="21" y2="15" />
+                <line x1="9" y1="3" x2="9" y2="21" />
+              </svg>
+            </button>
+          </div>
+        </div>
         <div className="footer-right">{APP_PROJECT_NAME} {APP_VERSION}</div>
       </footer>
 
@@ -2169,7 +2353,7 @@ function App() {
           >
             ✕
           </button>
-          <div className="ack-tooltip-header">已收到的節點</div>
+          <div className="ack-tooltip-header">已確認接收</div>
           <div className="ack-tooltip-list">
             {ackData[ackTooltip].map((ack, idx) => (
               <div key={ack.ackId || idx} className="ack-tooltip-item">

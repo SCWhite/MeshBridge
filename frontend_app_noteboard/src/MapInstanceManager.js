@@ -27,17 +27,125 @@ function needsWebGLControl() {
 class MapInstanceManager {
   constructor(maxInstances = 3) {
     this.maxInstances = maxInstances
-    this.activeInstances = new Map()
-    this.pendingQueue = []
+    this.activeInstances = new Map()   // componentId -> { instanceId, priority }
     this.instanceCounter = 0
     this.needsControl = needsWebGLControl()
     this.desktopInteractiveMap = null
     this.desktopCallbacks = new Map()
+
+    // 手機版：追蹤所有已註冊的 LocationMap 及其可見性狀態
+    // componentId -> { visible: bool, onGrant: fn, onRevoke: fn }
+    this._registered = new Map()
+    this._scanScheduled = false
+    this._scanDelay = 150  // debounce ms
+
+    // 手機版：監聽 scroll 事件做 debounce rescan
+    if (this.needsControl) {
+      let scrollTimer = null
+      window.addEventListener('scroll', () => {
+        if (scrollTimer) clearTimeout(scrollTimer)
+        scrollTimer = setTimeout(() => {
+          this._scheduleScan()
+        }, this._scanDelay)
+      }, { passive: true })
+    }
   }
+
+  // === 手機版 LocationMap 註冊/取消 ===
+
+  register(componentId, { onGrant, onRevoke }) {
+    this._registered.set(componentId, {
+      visible: false,
+      onGrant,
+      onRevoke
+    })
+  }
+
+  unregister(componentId) {
+    this._registered.delete(componentId)
+    if (this.activeInstances.has(componentId)) {
+      this.activeInstances.delete(componentId)
+    }
+    // 有空位了，重新掃描
+    this._scheduleScan()
+  }
+
+  setVisible(componentId, visible) {
+    const entry = this._registered.get(componentId)
+    if (!entry) return
+    if (entry.visible === visible) return
+    entry.visible = visible
+    this._scheduleScan()
+  }
+
+  // 外部觸發重新掃描（例如 view 切換後）
+  triggerScan() {
+    this._scheduleScan()
+  }
+
+  _scheduleScan() {
+    if (this._scanScheduled) return
+    this._scanScheduled = true
+    // 使用 requestAnimationFrame + setTimeout 的組合確保 DOM 更新後再掃描
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        this._scanScheduled = false
+        this._doScan()
+      }, 20)
+    })
+  }
+
+  _doScan() {
+    if (!this.needsControl) return
+
+    // 1. 收集所有可見的 component（依優先級排序：visible > not visible）
+    const visibleIds = []
+    const invisibleActiveIds = []
+
+    for (const [cid, entry] of this._registered.entries()) {
+      if (entry.visible) {
+        visibleIds.push(cid)
+      } else if (this.activeInstances.has(cid)) {
+        invisibleActiveIds.push(cid)
+      }
+    }
+
+    // 2. 計算需要多少 slot 給可見的地圖
+    const alreadyActiveVisible = visibleIds.filter(cid => this.activeInstances.has(cid))
+    const needSlotVisible = visibleIds.filter(cid => !this.activeInstances.has(cid))
+
+    let availableSlots = this.maxInstances - this.activeInstances.size
+
+    // 3. 如果空位不夠，從不可見的 active instances 中回收
+    if (needSlotVisible.length > availableSlots) {
+      const toRevoke = invisibleActiveIds.slice(0, needSlotVisible.length - availableSlots)
+      for (const cid of toRevoke) {
+        this.activeInstances.delete(cid)
+        const entry = this._registered.get(cid)
+        if (entry && entry.onRevoke) {
+          entry.onRevoke()
+        }
+        availableSlots++
+      }
+    }
+
+    // 4. 授予可見地圖 slot
+    for (const cid of needSlotVisible) {
+      if (availableSlots <= 0) break
+      const instanceId = ++this.instanceCounter
+      this.activeInstances.set(cid, { instanceId, priority: 10 })
+      const entry = this._registered.get(cid)
+      if (entry && entry.onGrant) {
+        entry.onGrant()
+      }
+      availableSlots--
+    }
+  }
+
+  // === 相容舊 API（LocationPicker 等仍使用）===
 
   requestInstance(componentId, priority = 0) {
     return new Promise((resolve) => {
-      // 不需要 WebGL 控制的設備：直接允許所有地圖實例
       if (!this.needsControl) {
         const instanceId = ++this.instanceCounter
         this.activeInstances.set(componentId, { instanceId, priority })
@@ -45,18 +153,23 @@ class MapInstanceManager {
         return
       }
 
-      // 需要 WebGL 控制的設備（Android Chrome / iOS Safari）：應用實例限制
       if (this.activeInstances.size < this.maxInstances) {
         const instanceId = ++this.instanceCounter
         this.activeInstances.set(componentId, { instanceId, priority })
         resolve({ allowed: true, instanceId })
       } else {
-        this.pendingQueue.push({ componentId, priority, resolve })
-        this.pendingQueue.sort((a, b) => b.priority - a.priority)
-        
-        const lowestPriorityActive = this._findLowestPriorityActive()
-        if (lowestPriorityActive && lowestPriorityActive.priority < priority) {
-          this.releaseInstance(lowestPriorityActive.componentId)
+        // 高優先級（如 LocationPicker priority=100）可搶佔低優先級的 slot
+        const lowestActive = this._findLowestPriorityActive()
+        if (lowestActive && lowestActive.priority < priority) {
+          // 回收最低優先級的
+          const entry = this._registered.get(lowestActive.componentId)
+          this.activeInstances.delete(lowestActive.componentId)
+          if (entry && entry.onRevoke) {
+            entry.onRevoke()
+          }
+          const instanceId = ++this.instanceCounter
+          this.activeInstances.set(componentId, { instanceId, priority })
+          resolve({ allowed: true, instanceId })
         } else {
           resolve({ allowed: false, instanceId: null })
         }
@@ -67,7 +180,7 @@ class MapInstanceManager {
   releaseInstance(componentId) {
     if (this.activeInstances.has(componentId)) {
       this.activeInstances.delete(componentId)
-      this._processQueue()
+      this._scheduleScan()
     }
   }
 
@@ -86,15 +199,6 @@ class MapInstanceManager {
       }
     }
     return lowest
-  }
-
-  _processQueue() {
-    if (this.pendingQueue.length > 0 && this.activeInstances.size < this.maxInstances) {
-      const next = this.pendingQueue.shift()
-      const instanceId = ++this.instanceCounter
-      this.activeInstances.set(next.componentId, { instanceId, priority: next.priority })
-      next.resolve({ allowed: true, instanceId })
-    }
   }
 
   getActiveCount() {
