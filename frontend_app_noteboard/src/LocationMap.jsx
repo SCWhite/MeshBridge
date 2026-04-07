@@ -41,27 +41,47 @@ function LocationMap({ lat, lng, locations, zoom = 14 }) {
     }
   }, [])
 
+  // 手機版：向 MapInstanceManager 註冊，接收 grant/revoke 回調
   useEffect(() => {
-    // 不需要 WebGL 控制的設備：跳過 Intersection Observer
+    if (!needsControl.current) return
+
+    const cid = componentId.current
+    mapInstanceManager.register(cid, {
+      onGrant: () => setCanRenderMap(true),
+      onRevoke: () => {
+        // 被回收 slot 時，銷毀地圖
+        if (map.current) {
+          markers.current.forEach(m => m.remove())
+          markers.current = []
+          map.current.remove()
+          map.current = null
+        }
+        setCanRenderMap(false)
+      }
+    })
+
+    return () => {
+      mapInstanceManager.unregister(cid)
+    }
+  }, [])
+
+  // 手機版：IntersectionObserver 通知 manager 可見性變化
+  useEffect(() => {
     if (!needsControl.current) return
     if (!mapContainer.current) return
 
+    const cid = componentId.current
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
           const visible = entry.isIntersecting
           setIsVisible(visible)
-          
-          if (visible) {
-            mapInstanceManager.updatePriority(componentId.current, 10)
-          } else {
-            mapInstanceManager.updatePriority(componentId.current, 1)
-          }
+          mapInstanceManager.setVisible(cid, visible)
         })
       },
       {
         root: null,
-        rootMargin: '50px',
+        rootMargin: '200px',
         threshold: 0.1
       }
     )
@@ -132,31 +152,27 @@ function LocationMap({ lat, lng, locations, zoom = 14 }) {
   }, [lat, lng, locations, zoom, mapEnabled, isInteractive])
 
   useEffect(() => {
-    const requestMapInstance = async () => {
-      // 桌機版：不自動渲染 WebGL，等待用戶點擊
-      if (!isMobile.current && !isInteractive) {
-        setCanRenderMap(false)
-        return
-      }
-
-      // 手機版：不需要 WebGL 控制的設備，直接允許渲染
-      if (!needsControl.current) {
-        setCanRenderMap(true)
-        return
-      }
-
-      // 手機版：需要 WebGL 控制的設備（Android Chrome / iOS Safari）：檢查可見性並請求實例
-      if (!isVisible) {
-        setCanRenderMap(false)
-        return
-      }
-
-      const result = await mapInstanceManager.requestInstance(componentId.current, 10)
-      setCanRenderMap(result.allowed)
+    // 桌機版：不自動渲染 WebGL，等待用戶點擊
+    if (!isMobile.current && !isInteractive) {
+      setCanRenderMap(false)
+      return
     }
 
-    requestMapInstance()
-  }, [isVisible, isInteractive])
+    // 桌機版：用戶點擊後啟用
+    if (!isMobile.current && isInteractive) {
+      setCanRenderMap(true)
+      return
+    }
+
+    // 手機版：不需要 WebGL 控制的設備，直接允許渲染
+    if (!needsControl.current) {
+      setCanRenderMap(true)
+      return
+    }
+
+    // 手機版需要 WebGL 控制：canRenderMap 由 manager 的 onGrant/onRevoke 控制
+    // 不需要在此手動設定
+  }, [isInteractive])
 
   useEffect(() => {
     if (map.current) return
@@ -259,11 +275,6 @@ function LocationMap({ lat, lng, locations, zoom = 14 }) {
       if (map.current) {
         map.current.remove()
         map.current = null
-      }
-      // 只在需要 WebGL 控制的設備上釋放實例
-      if (needsControl.current) {
-        mapInstanceManager.releaseInstance(componentId.current)
-        setCanRenderMap(false)
       }
       // 桌機版：釋放互動地圖實例
       if (!isMobile.current && isInteractive) {
