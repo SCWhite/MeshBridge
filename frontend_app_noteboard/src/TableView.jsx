@@ -212,8 +212,8 @@ function TableView({ notes, isActive, onAddRow, headerVisible = true, boardId, m
     }
   }, [activeSheetId, boardId, sheetIds])
 
-  // Clear highlight on worksheet or channel switch
-  useEffect(() => { setHighlight(null) }, [activeSheetId, boardId])
+  // Clear highlight and cancel editing on worksheet or channel switch
+  useEffect(() => { setHighlight(null); cancelEditing() }, [activeSheetId, boardId])
 
   // scroll active tab into view
   useEffect(() => {

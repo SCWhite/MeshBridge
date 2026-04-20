@@ -1,11 +1,8 @@
 LOCAL_APP = "noteboard"
 
-# SEND_INTERVAL_SECOND: 排程器的執行間隔（秒），控制 LAN only 留言自動發送至 LoRa 的頻率。
-#   建議設定在 30~180 秒之間，過短可能造成 LoRa 頻寬阻塞。
-SEND_INTERVAL_SECOND = 30
-# ACK_TIMEOUT_SECONDS: 等待 LoRa ACK 回覆的超時時間（秒）。
-#   發送留言後若在此時間內未收到 ACK，留言狀態會從 Sending 回退為 LAN only，等待下次排程重新發送。
-ACK_TIMEOUT_SECONDS = 60
+# SEND_INTERVAL_SECOND: 排程器的執行間隔（秒），控制留言自動發送至 LoRa 的頻率。
+#   建議設定在 60~180 秒之間，過短可能造成 LoRa 頻寬阻塞。
+SEND_INTERVAL_SECOND = 60
 
 # NOTEBOARD_SERVICE_NAME: 服務顯示名稱，用於網頁標題與 ePaper 頁面標題。
 #   可自訂為符合應用場景的名稱，例如："社區公佈欄"、"活動留言板"。
@@ -27,11 +24,6 @@ BOARD_MESSAGE_CHANNELS = [
         "name": "MQBoardTest",
         "user_passcode": "", "admin_passcode": "667788", "post_passcode": "",
         "max_notes": 100, "max_archived_notes": 500
-    },
-    {
-        "name": "TeamAlpha",
-        "user_passcode": "1234", "admin_passcode": "998877", "post_passcode": "5678",
-        "max_notes": 100, "max_archived_notes": 500
     }
 ]
 
@@ -50,7 +42,7 @@ REAUTH_ON_CHANNEL_SWITCH = False
 
 AUTO_RESEND_NODE=0
 AUTO_RESEND_MIN_MINUTE=2
-AUTO_RESEND_MAX_MINUTE=60
+AUTO_RESEND_MAX_MINUTE=30
 
 # 裝置連線時，自動用主機時間更新設備時間
 # 建議在 Raspberry Pi 有安裝 RTC 模組 (eg. DS3231)並有正確設定時間時，可啟用此功能

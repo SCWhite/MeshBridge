@@ -10,13 +10,14 @@ import uuid
 import re
 import subprocess
 import logging
+import random
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, redirect, url_for, jsonify, make_response, session, send_file
 from flask_socketio import SocketIO, emit
 from meshtastic.serial_interface import SerialInterface
 from pubsub import pub
 import config
-from config import SEND_INTERVAL_SECOND, ACK_TIMEOUT_SECONDS, BOARD_MESSAGE_CHANNELS
+from config import SEND_INTERVAL_SECOND, BOARD_MESSAGE_CHANNELS
 
 print(f"[系統] 使用多頻道設定: {[ch['name'] for ch in BOARD_MESSAGE_CHANNELS]}")
 
@@ -24,7 +25,7 @@ print(f"[系統] 使用多頻道設定: {[ch['name'] for ch in BOARD_MESSAGE_CHA
 CONFIGURED_CHANNEL_NAMES = [ch['name'] for ch in BOARD_MESSAGE_CHANNELS]
 NOTEBOARD_MBTILES_FOLDER = getattr(config, 'NOTEBOARD_MBTILES_FOLDER', './maps')
 NOTEBOARD_MBTILES_LAYER_MODE = getattr(config, 'NOTEBOARD_MBTILES_LAYER_MODE', 'auto')
-APP_VERSION = "v0.7.0"
+APP_VERSION = "v0.7.1"
 APP_PROJECT_NAME = "meshBridge/meshNoteboard"
 NOTEBOARD_SERVICE_NAME = getattr(
     config,
@@ -34,6 +35,9 @@ NOTEBOARD_SERVICE_NAME = getattr(
 EPAPER_CONNECT_NOTE = getattr(config, 'EPAPER_CONNECT_NOTE', '即可檢視更多訊息。')
 REAUTH_ON_CHANNEL_SWITCH = getattr(config, 'REAUTH_ON_CHANNEL_SWITCH', False)
 UPDATE_LORA_DEVICE_TIME_FROM_LOCAL = getattr(config, 'UPDATE_LORA_DEVICE_TIME_FROM_LOCAL', False)
+ACK_TIMEOUT_SECONDS = 60
+ACK_DELAY_SECONDS = max(10, SEND_INTERVAL_SECOND // 2)
+ACK_JITTER = True
 
 # 自動重送機制參數
 _auto_resend_node_raw = getattr(config, 'AUTO_RESEND_NODE', 0)
@@ -42,7 +46,22 @@ try:
 except (ValueError, TypeError):
     AUTO_RESEND_NODE = 0
 
-AUTO_RESEND_BACKOFF_SECOND = 150
+AUTO_RESEND_BACKOFF_SECOND = 100
+
+# 55秒退避基數
+# AUTO_RESEND_MAX_MINUTE=30 => 8 次
+# AUTO_RESEND_MAX_MINUTE=60 => 11 次
+# AUTO_RESEND_MAX_MINUTE=120 => 16 次
+
+# 100秒退避基數
+# AUTO_RESEND_MAX_MINUTE=30 => 6 次
+# AUTO_RESEND_MAX_MINUTE=60 => 9 次
+# AUTO_RESEND_MAX_MINUTE=120 => 13 次
+
+# 150秒退避基數
+# AUTO_RESEND_MAX_MINUTE=30 => 5 次
+# AUTO_RESEND_MAX_MINUTE=60 => 7 次
+# AUTO_RESEND_MAX_MINUTE=120 => 10 次
 
 if AUTO_RESEND_NODE > 0:
     AUTO_RESEND_MIN_MINUTE = float(getattr(config, 'AUTO_RESEND_MIN_MINUTE', 6))
@@ -105,7 +124,7 @@ except ImportError:
 IS_PRINT_LORA_PACKAGE = False
 
 # 驗證頻道設定
-FORBIDDEN_CHANNEL_NAMES = ["MeshTW", "Emergency!"]
+FORBIDDEN_CHANNEL_NAMES = ["MeshTW", "Emergency!","SignalTest"]
 
 for _ch_cfg in BOARD_MESSAGE_CHANNELS:
     _ch_name = _ch_cfg.get('name', '')
@@ -130,7 +149,7 @@ channel_validated = False
 active_channels = []  # 連線後實際可用的頻道清單 (從 BOARD_MESSAGE_CHANNELS 中篩選出設備上存在的頻道)
 pending_ack = {}
 FLAG_DEVICE_WAITING_ACK = False
-send_interval = max(SEND_INTERVAL_SECOND, 10)
+send_interval = max(SEND_INTERVAL_SECOND, 30)
 deviceLastPosition = {'lat': 0.0, 'lng': 0.0}
 isDeviceProvideLocation = False
 
@@ -254,6 +273,7 @@ def init_database():
             grid_x INTEGER NOT NULL DEFAULT 0,
             grid_y INTEGER NOT NULL DEFAULT 0,
             lora_node_id TEXT,
+            transmit_st_at INTEGER,
             FOREIGN KEY (reply_lora_msg_id) REFERENCES notes(note_id)
         )
     ''')
@@ -268,6 +288,8 @@ def init_database():
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
             lora_node_id TEXT NOT NULL,
+            hop_limit INTEGER,
+            hop_start INTEGER,
             FOREIGN KEY (note_id) REFERENCES notes(note_id)
         )
     ''')
@@ -292,8 +314,27 @@ def migrate_database():
             cursor.execute('ALTER TABLE notes ADD COLUMN lora_node_id TEXT')
             conn.commit()
             print("[資料庫遷移] 已成功新增 lora_node_id 欄位")
-        else:
-            print("[資料庫遷移] notes 表已包含 lora_node_id 欄位，無需遷移")
+        
+        cursor.execute("PRAGMA table_info(ack_records)")
+        ack_columns = [column[1] for column in cursor.fetchall()]
+        
+        if 'hop_limit' not in ack_columns:
+            print("[資料庫遷移] 偵測到 ack_records 表缺少 hop_limit 欄位，開始遷移...")
+            cursor.execute('ALTER TABLE ack_records ADD COLUMN hop_limit INTEGER')
+            conn.commit()
+            print("[資料庫遷移] 已成功新增 hop_limit 欄位")
+        
+        if 'hop_start' not in ack_columns:
+            print("[資料庫遷移] 偵測到 ack_records 表缺少 hop_start 欄位，開始遷移...")
+            cursor.execute('ALTER TABLE ack_records ADD COLUMN hop_start INTEGER')
+            conn.commit()
+            print("[資料庫遷移] 已成功新增 hop_start 欄位")
+        
+        if 'transmit_st_at' not in columns:
+            print("[資料庫遷移] 偵測到 notes 表缺少 transmit_st_at 欄位，開始遷移...")
+            cursor.execute('ALTER TABLE notes ADD COLUMN transmit_st_at INTEGER')
+            conn.commit()
+            print("[資料庫遷移] 已成功新增 transmit_st_at 欄位")
     except Exception as e:
         print(f"[資料庫遷移] 遷移失敗: {e}")
     finally:
@@ -523,7 +564,7 @@ def get_note_id_by_lora_msg_id(lora_msg_id):
         print(f"透過 lora_msg_id 取得 note_id 失敗: {e}")
         return None
 
-def save_or_update_ack_record(note_id, lora_node_id):
+def save_or_update_ack_record(note_id, lora_node_id, hop_limit=None, hop_start=None):
     """儲存或更新 ACK 記錄"""
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -540,22 +581,22 @@ def save_or_update_ack_record(note_id, lora_node_id):
         if existing_record:
             cursor.execute('''
                 UPDATE ack_records 
-                SET updated_at = ?
+                SET updated_at = ?, hop_limit = ?, hop_start = ?
                 WHERE note_id = ? AND lora_node_id = ?
-            ''', (timestamp, note_id, lora_node_id))
+            ''', (timestamp, hop_limit, hop_start, note_id, lora_node_id))
             conn.commit()
             conn.close()
-            print(f"  -> 已更新 ACK 記錄 (note_id={note_id}, lora_node_id={lora_node_id})")
+            print(f"  -> 已更新 ACK 記錄 (note_id={note_id}, lora_node_id={lora_node_id}, hop_limit={hop_limit}, hop_start={hop_start})")
             return True
         else:
             ack_id = str(uuid.uuid4())
             cursor.execute('''
-                INSERT INTO ack_records (ack_id, note_id, created_at, updated_at, lora_node_id)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (ack_id, note_id, timestamp, timestamp, lora_node_id))
+                INSERT INTO ack_records (ack_id, note_id, created_at, updated_at, lora_node_id, hop_limit, hop_start)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (ack_id, note_id, timestamp, timestamp, lora_node_id, hop_limit, hop_start))
             conn.commit()
             conn.close()
-            print(f"  -> 已新建 USER ACK 記錄 (ack_id={ack_id}, note_id={note_id}, lora_node_id={lora_node_id})")
+            print(f"  -> 已新建 USER ACK 記錄 (ack_id={ack_id}, note_id={note_id}, lora_node_id={lora_node_id}, hop_limit={hop_limit}, hop_start={hop_start})")
             return True
     except Exception as e:
         print(f"儲存或更新 USER ACK 記錄失敗: {e}")
@@ -922,6 +963,27 @@ def update_note_lora_msg_id(note_id, lora_msg_id):
         print(f"更新 note lora_msg_id 失敗: {e}")
         return False
 
+def update_note_transmit_st_at(note_id):
+    """記錄 note 開始傳輸的時間"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        timestamp = int(time.time() * 1000)
+        
+        cursor.execute('''
+            UPDATE notes 
+            SET transmit_st_at = ?
+            WHERE note_id = ?
+        ''', (timestamp, note_id))
+        
+        affected_rows = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return affected_rows > 0
+    except Exception as e:
+        print(f"更新 note transmit_st_at 失敗: {e}")
+        return False
+
 def get_notes_from_db(board_id, include_deleted=False):
     """從資料庫取得 notes"""
     try:
@@ -1064,26 +1126,31 @@ def get_color_index_from_palette(bg_color):
     except Exception as e:
         return 0
 
+def _spawn_ack_delayed(lora_msg_id, interface_obj, channel_name):
+    """排程延遲發送 ACK（30 ± 3 秒）"""
+    delay = ACK_DELAY_SECONDS + (random.uniform(-3, 3) if ACK_JITTER else 0)
+    eventlet.spawn_after(delay, send_ack_delayed, lora_msg_id, interface_obj, channel_name)
+
 def send_ack_delayed(lora_msg_id, interface_obj, channel_name, retry_count=0, max_retries=3):
     """延遲發送 USER ACK 命令（含重試機制）"""
     try:
         if not interface_obj:
-            print(f"  -> [延遲 60 秒後] Interface 物件為 None，無法發送 ACK")
+            print(f"  -> [延遲 ~30 秒後] Interface 物件為 None，無法發送 ACK")
             return
         
         if not hasattr(interface_obj, 'localNode') or not interface_obj.localNode:
-            print(f"  -> [延遲 60 秒後] Interface 未連接到本地節點，無法發送 ACK")
+            print(f"  -> [延遲 ~30 秒後] Interface 未連接到本地節點，無法發送 ACK")
             return
         
         if not lora_connected:
-            print(f"  -> [延遲 60 秒後] LoRa 設備未連接，無法發送 ACK")
+            print(f"  -> [延遲 ~30 秒後] LoRa 設備未連接，無法發送 ACK")
             return
         
         ack_cmd = f"/ack {lora_msg_id}"
         interface_obj.sendText(ack_cmd, channelIndex=get_channel_index(interface_obj, channel_name))
-        print(f"  -> [延遲 60 秒後] 已發送 USER ACK 命令: {ack_cmd}")
+        print(f"  -> [延遲 ~30 秒後] 已發送 USER ACK 命令: {ack_cmd}")
     except Exception as e:
-        print(f"  -> [延遲 60 秒後] 發送 USER ACK 命令失敗 (嘗試 {retry_count + 1}/{max_retries + 1}): {e}")
+        print(f"  -> [延遲 ~30 秒後] 發送 USER ACK 命令失敗 (嘗試 {retry_count + 1}/{max_retries + 1}): {e}")
         
         if retry_count < max_retries:
             retry_delay = 10
@@ -1122,6 +1189,21 @@ def onReceive(packet, interface):
                 
                 if update_note_status(note_info['note_id'], 'LoRa sent'):
                     print(f"  -> 已更新 note {note_info['note_id']} 狀態為 'LoRa sent'")
+                    
+                    # table view 格式的 note，發送成功時同步更新 created_at（以發送時間為基準）
+                    try:
+                        _conn = sqlite3.connect(DB_PATH)
+                        _conn.row_factory = sqlite3.Row
+                        _cur = _conn.cursor()
+                        _cur.execute('SELECT body, updated_at FROM notes WHERE note_id = ?', (note_info['note_id'],))
+                        _row = _cur.fetchone()
+                        if _row and _is_table_format_note(_row['body']):
+                            _cur.execute('UPDATE notes SET created_at = ? WHERE note_id = ?', (_row['updated_at'], note_info['note_id']))
+                            _conn.commit()
+                            print(f"  -> [table note] 已同步更新 created_at = updated_at ({_row['updated_at']})")
+                        _conn.close()
+                    except Exception as e:
+                        print(f"  -> [table note] 更新 created_at 失敗: {e}")
                     
                     try:
                         update_note_lora_msg_id(note_info['note_id'], lora_msg_id)
@@ -1202,8 +1284,8 @@ def onReceive(packet, interface):
                         should_refresh = True
                         if _is_table_format_note(body):
                             is_table_note = True
-                        print(f"  -> 已儲存訊息 (含 color_id={color_id}, author_key={author_key})，將在 60 秒後發送 USER ACK 命令")
-                        eventlet.spawn_after(60, send_ack_delayed, lora_msg_id, interface, channel_name)
+                        print(f"  -> 已儲存訊息 (含 color_id={color_id}, author_key={author_key})，將在 ~30 秒後發送 USER ACK 命令")
+                        _spawn_ack_delayed(lora_msg_id, interface, channel_name)
                         # 偵測工作表刪除指令
                         _sd_m = SHEET_DELETE_RE.match(body)
                         if _sd_m:
@@ -1226,8 +1308,8 @@ def onReceive(packet, interface):
                     should_refresh = True
                     if _is_table_format_note(body):
                         is_table_note = True
-                    print(f"  -> 已儲存訊息，將在 60 秒後發送 USER ACK 命令")
-                    eventlet.spawn_after(60, send_ack_delayed, lora_msg_id, interface, channel_name)
+                    print(f"  -> 已儲存訊息，將在 ~30 秒後發送 USER ACK 命令")
+                    _spawn_ack_delayed(lora_msg_id, interface, channel_name)
                     # 偵測工作表刪除指令
                     _sd_m = SHEET_DELETE_RE.match(body)
                     if _sd_m:
@@ -1263,8 +1345,8 @@ def onReceive(packet, interface):
                                 if _is_table_format_note(body):
                                     is_table_note = True
                                 print(f"[重發訊息寫入資料庫成功] lora_msg_id={resend_lora_msg_id}, body={body}")
-                                print(f"  -> 已儲存訊息 (含 color_id={color_id}, author_key={author_key})，將在 60 秒後發送 USER ACK 命令")
-                                eventlet.spawn_after(60, send_ack_delayed, resend_lora_msg_id, interface, channel_name)
+                                print(f"  -> 已儲存訊息 (含 color_id={color_id}, author_key={author_key})，將在 ~30 秒後發送 USER ACK 命令")
+                                _spawn_ack_delayed(resend_lora_msg_id, interface, channel_name)
                                 # 偵測工作表刪除指令
                                 _sd_m = SHEET_DELETE_RE.match(body)
                                 if _sd_m:
@@ -1287,8 +1369,8 @@ def onReceive(packet, interface):
                                     print(f"  -> 更新 is_temp_parent_note 失敗: {e}")
                         else:
                             print(f"  -> lora_msg_id {resend_lora_msg_id} 已存在，略過建立資料")
-                            print(f"  -> 但仍將在 60 秒後發送 USER ACK 命令")
-                            eventlet.spawn_after(60, send_ack_delayed, resend_lora_msg_id, interface, channel_name)
+                            print(f"  -> 但仍將在 ~30 秒後發送 USER ACK 命令")
+                            _spawn_ack_delayed(resend_lora_msg_id, interface, channel_name)
                     else:
                         print(f"  -> 格式錯誤，應為 /msg [lora_msg_id,color_id,author_key]body")
                 else:
@@ -1309,8 +1391,8 @@ def onReceive(packet, interface):
                             if _is_table_format_note(body):
                                 is_table_note = True
                             print(f"[重發訊息寫入資料庫成功] lora_msg_id={resend_lora_msg_id}, body={body}")
-                            print(f"  -> 已儲存訊息，將在 60 秒後發送 USER ACK 命令")
-                            eventlet.spawn_after(60, send_ack_delayed, resend_lora_msg_id, interface, channel_name)
+                            print(f"  -> 已儲存訊息，將在 ~30 秒後發送 USER ACK 命令")
+                            _spawn_ack_delayed(resend_lora_msg_id, interface, channel_name)
                             # 偵測工作表刪除指令
                             _sd_m = SHEET_DELETE_RE.match(body)
                             if _sd_m:
@@ -1333,8 +1415,8 @@ def onReceive(packet, interface):
                                 print(f"  -> 更新 is_temp_parent_note 失敗: {e}")
                     else:
                         print(f"  -> lora_msg_id {resend_lora_msg_id} 已存在，略過建立資料")
-                        print(f"  -> 但仍將在 60 秒後發送 USER ACK 命令")
-                        eventlet.spawn_after(60, send_ack_delayed, resend_lora_msg_id, interface, channel_name)
+                        print(f"  -> 但仍將在 ~30 秒後發送 USER ACK 命令")
+                        _spawn_ack_delayed(resend_lora_msg_id, interface, channel_name)
                     
             elif msg.startswith('/color [') and ']' in msg:
                 end_bracket = msg.index(']')
@@ -1393,13 +1475,15 @@ def onReceive(packet, interface):
                     
             elif msg.startswith('/ack '):
                 ack_lora_msg_id = msg[5:].strip()
-                print(f"[收到 ACK] lora_msg_id={ack_lora_msg_id}, from={lora_uuid}")
+                ack_hop_limit = packet.get('hopLimit')
+                ack_hop_start = packet.get('hopStart')
+                print(f"[收到 ACK] lora_msg_id={ack_lora_msg_id}, from={lora_uuid}, hop_limit={ack_hop_limit}, hop_start={ack_hop_start}")
                 
                 note_id = get_note_id_by_lora_msg_id(ack_lora_msg_id)
                 if not note_id:
                     print(f"  -> 錯誤：找不到 lora_msg_id={ack_lora_msg_id} 對應的 note")
                 else:
-                    if save_or_update_ack_record(note_id, lora_uuid):
+                    if save_or_update_ack_record(note_id, lora_uuid, hop_limit=ack_hop_limit, hop_start=ack_hop_start):
                         print(f"  -> 成功處理 USER ACK (note_id={note_id})")
                         socketio.emit('ack_received', {
                             'note_id': note_id,
@@ -1457,8 +1541,8 @@ def onReceive(packet, interface):
                         conn.commit()
                         conn.close()
                         should_refresh = True
-                        print(f"  -> 成功儲存回覆訊息 (含 color_id={color_id}, author_key={author_key})，將在 60 秒後發送 USER ACK 命令")
-                        eventlet.spawn_after(60, send_ack_delayed, lora_msg_id, interface, channel_name)
+                        print(f"  -> 成功儲存回覆訊息 (含 color_id={color_id}, author_key={author_key})，將在 ~30 秒後發送 USER ACK 命令")
+                        _spawn_ack_delayed(lora_msg_id, interface, channel_name)
                     except Exception as e:
                         print(f"  -> 儲存回覆訊息失敗: {e}")
                 else:
@@ -1500,8 +1584,8 @@ def onReceive(packet, interface):
                     conn.commit()
                     conn.close()
                     should_refresh = True
-                    print(f"  -> 成功儲存回覆訊息，將在 60 秒後發送 USER ACK 命令")
-                    eventlet.spawn_after(60, send_ack_delayed, lora_msg_id, interface, channel_name)
+                    print(f"  -> 成功儲存回覆訊息，將在 ~30 秒後發送 USER ACK 命令")
+                    _spawn_ack_delayed(lora_msg_id, interface, channel_name)
                 except Exception as e:
                     print(f"  -> 儲存回覆訊息失敗: {e}")
                     
@@ -1572,16 +1656,16 @@ def onReceive(packet, interface):
                                     
                                     should_refresh = True
                                     print(f"[重發回覆寫入資料庫成功] lora_msg_id={resend_lora_msg_id}, body={body}")
-                                    print(f"  -> 已儲存訊息 (含 color_id={color_id}, author_key={author_key})，將在 60 秒後發送 USER ACK 命令")
-                                    eventlet.spawn_after(60, send_ack_delayed, resend_lora_msg_id, interface, channel_name)
+                                    print(f"  -> 已儲存訊息 (含 color_id={color_id}, author_key={author_key})，將在 ~30 秒後發送 USER ACK 命令")
+                                    _spawn_ack_delayed(resend_lora_msg_id, interface, channel_name)
                                     if updated_count > 0:
                                         print(f"  -> 已更新 {updated_count} 筆回覆的 is_temp_parent_note 為 0")
                                 except Exception as e:
                                     print(f"  -> 儲存重發回覆訊息失敗: {e}")
                             else:
                                 print(f"  -> lora_msg_id {resend_lora_msg_id} 已存在，略過建立資料")
-                                print(f"  -> 但仍將在 60 秒後發送 USER ACK 命令")
-                                eventlet.spawn_after(60, send_ack_delayed, resend_lora_msg_id, interface, channel_name)
+                                print(f"  -> 但仍將在 ~30 秒後發送 USER ACK 命令")
+                                _spawn_ack_delayed(resend_lora_msg_id, interface, channel_name)
                         else:
                             print(f"  -> 格式錯誤，應為 /reply <lora_msg_id,color_id,author_key>[parent_lora_msg_id]body")
                     else:
@@ -1631,16 +1715,16 @@ def onReceive(packet, interface):
                                 
                                 should_refresh = True
                                 print(f"[重發回覆寫入資料庫成功] lora_msg_id={resend_lora_msg_id}, body={body}")
-                                print(f"  -> 已儲存訊息，將在 60 秒後發送 USER ACK 命令")
-                                eventlet.spawn_after(60, send_ack_delayed, resend_lora_msg_id, interface, channel_name)
+                                print(f"  -> 已儲存訊息，將在 ~30 秒後發送 USER ACK 命令")
+                                _spawn_ack_delayed(resend_lora_msg_id, interface, channel_name)
                                 if updated_count > 0:
                                     print(f"  -> 已更新 {updated_count} 筆回覆的 is_temp_parent_note 為 0")
                             except Exception as e:
                                 print(f"  -> 儲存重發回覆訊息失敗: {e}")
                         else:
                             print(f"  -> lora_msg_id {resend_lora_msg_id} 已存在，略過建立資料")
-                            print(f"  -> 但仍將在 60 秒後發送 USER ACK 命令")
-                            eventlet.spawn_after(60, send_ack_delayed, resend_lora_msg_id, interface, channel_name)
+                            print(f"  -> 但仍將在 ~30 秒後發送 USER ACK 命令")
+                            _spawn_ack_delayed(resend_lora_msg_id, interface, channel_name)
                     
             else:
                 if not msg.startswith('/'):
@@ -1701,7 +1785,8 @@ def send_scheduler_loop():
     
     while True:
         try:
-            eventlet.sleep(send_interval)
+            jitter = send_interval * 0.1 * (2 * random.random() - 1)
+            eventlet.sleep(send_interval + jitter)
             
             check_ack_timeout()
             
@@ -1740,6 +1825,7 @@ def send_scheduler_loop():
                             msg = f"/color [{update_note['lora_msg_id']}]{update_note['author_key']}, {color_index}"
                             print(f"  -> 發送 color 命令: {msg}")
                         
+                        update_note_transmit_st_at(update_note['note_id'])
                         interface.sendText(msg, channelIndex=channel_index)
                         print(f"  -> 已發送更新命令")
                         socketio.emit('refresh_notes', {'board_id': ch_name})
@@ -1791,6 +1877,7 @@ def send_scheduler_loop():
                         msg = f"/msg [new,{color_id},{author_key}]{note['body']}"
                         print(f"  -> 使用 /msg 指令 (含 color_id 與 author_key): {msg}")
                     
+                    update_note_transmit_st_at(note['note_id'])
                     result = interface.sendText(msg, channelIndex=channel_index, wantAck=True)
                     
                     if result:
@@ -1859,7 +1946,7 @@ def send_scheduler_loop():
                               AND n.deleted = 0
                               AND n.lora_msg_id IS NOT NULL AND n.lora_msg_id != ''
                               AND n.created_at > ?
-                              AND n.created_at < ?
+                              AND n.updated_at < ?
                               AND n.board_id IN ({placeholders})
                               AND (SELECT COUNT(*) FROM ack_records ar WHERE ar.note_id = n.note_id) < ?
                               AND (n.resent_count = 0 OR (? - n.updated_at) >= n.resent_count * ?)
@@ -3565,6 +3652,7 @@ def _execute_resend_note(board_id, note_id, triggered_by='user'):
                 msg = f"/msg [{lora_msg_id},{color_id},{db_author_key}]{body}"
                 print(f"{log_prefix} 使用 /msg 指令 (含 color_id 與 author_key): {msg}")
             
+            update_note_transmit_st_at(note_id)
             interface.sendText(msg, channelIndex=channel_index)
             print(f"  -> 已發送重新發送命令 (note_id={note_id}, resent_count={resent_count + 1}, triggered_by={triggered_by})")
             print(f"  -> color_id={color_id}, author_key={db_author_key} 已在訊息中一併發送")

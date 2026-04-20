@@ -1553,6 +1553,8 @@ function App() {
     const canEdit = isMyNote && status === 'LAN only' && !data.archived
     const canManage = isMyNote && status !== 'LAN only' && !data.archived
     const canAdminDelete = isAdmin && !isMyNote && !data.archived && status !== 'LAN only'
+    const trimmedText = (text || '').trim()
+    const isTableCommand = TABLE_CELL_RE.test(trimmedText) || /^\{[a-z0-9]{6}:delete\}$/.test(trimmedText)
     const isEditing = editingNoteId === data.noteId
 
     if (isEditing) {
@@ -1814,7 +1816,7 @@ function App() {
           <div className="note-actions">
             <button className="btn-delete" onClick={() => handleDeleteNote(data.noteId, false)}>🗑️</button>
             <button className="btn-color" onClick={() => handleOpenColorPicker(data)}>🎨</button>
-            {isAdmin && !isReply && !data.replyLoraMessageId && !data.isTempParentNote && !data.archived && data.status !== 'Sending' && (
+            {isAdmin && !isReply && !data.replyLoraMessageId && !data.isTempParentNote && !data.archived && data.status !== 'Sending' && !isTableCommand && (
               data.isPinedNote ? (
                 <button className="btn-resend-pin" onClick={() => handleResendPin(data.noteId)} title="重送置頂">📌</button>
               ) : (
@@ -1827,7 +1829,7 @@ function App() {
           <div className="note-actions">
             <button className="btn-delete" onClick={() => handleDeleteNote(data.noteId, false, senderID)}>🗑️</button>
             <button className="btn-color" onClick={() => handleOpenColorPicker(data)}>🎨</button>
-            {!isReply && !data.replyLoraMessageId && !data.isTempParentNote && data.status !== 'Sending' && (
+            {!isReply && !data.replyLoraMessageId && !data.isTempParentNote && data.status !== 'Sending' && !isTableCommand && (
               data.isPinedNote ? (
                 <button className="btn-resend-pin" onClick={() => handleResendPin(data.noteId)} title="重送置頂">📌</button>
               ) : (
