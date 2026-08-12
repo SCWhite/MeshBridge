@@ -51,7 +51,9 @@ LOCAL_APP = "noteboard"
 #### 方式一：直接執行 (開發除錯用)
 ```bash
 cd MeshBridge
+python -m venv venv
 source venv/bin/activate
+pip install -r requirements.txt
 python3 app.py
 ```
 
