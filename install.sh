@@ -99,19 +99,19 @@ fi
 echo -e "${YELLOW}[3/4] Configuring WiFi, DNS, and Services...${NC}"
 
 # Ensure scripts are executable
-chmod +x setup_wifi.sh setup_dns.sh setup_services.sh
+chmod +x scripts/*.sh
 
 # Run DNS Setup
 echo "--- Running DNS Setup ---"
-sudo ./setup_dns.sh
+sudo ./scripts/setup_dns.sh
 
 # Run WiFi Setup
 echo "--- Running WiFi Setup ---"
-sudo ./setup_wifi.sh
+sudo ./scripts/setup_wifi.sh
 
 # Run Service Registration
 echo "--- Registering Systemd Services ---"
-sudo ./setup_services.sh
+sudo ./scripts/setup_services.sh
 
 # 5. Completion
 echo -e "${GREEN}=========================================${NC}"
