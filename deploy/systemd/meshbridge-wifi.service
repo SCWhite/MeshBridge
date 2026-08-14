@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/home/pi/MeshBridge/setup_wifi.sh
+ExecStart=/home/pi/MeshBridge/scripts/setup_wifi.sh
 User=root
 RemainAfterExit=yes
 

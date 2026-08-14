@@ -27,7 +27,7 @@
 * **節點狀態監測**：
     * 網頁端即時顯示 LoRa 硬體連線狀態（紅綠燈號）。
     * 訊息傳送回饋：若 LoRa 未連線，訊息氣泡會變色提示「僅限 WiFi 本地」。
-* **[NoteBoard 留言板模式](README_NOTEBOARD.md)**：
+* **[NoteBoard 留言板模式](docs/README_NOTEBOARD.md)**：
     * 便利貼式協作留言板介面，支援留言建立、回覆、顏色標記與搜尋。
     * **LoRa 資料同步**：透過節流傳輸機制，將留言依排程自動發送至 LoRa 網路，實現跨節點資料同步。
     * **多頻道與權限管理**：支援多個獨立頻道，每個頻道可設定進入密碼、管理者密碼與發文通關碼。
@@ -79,24 +79,30 @@ Noteboard模組
 ```
 MeshBridge/
 ├── app.py                      # 後端主程式 (Flask + SocketIO + Meshtastic)
+├── config.py                   # 全域設定檔
 ├── requirements.txt            # Python 套件清單
+├── install.sh                  # 主安裝腳本
 ├── README.md                   # 專案說明書 (包含安裝與使用指南)
 ├── LICENSE                                  
 │
-├── templates/
-│   └── index.html              # 前端介面 (HTML + CSS + JS 邏輯)
+├── docs/                       # 專題文件
+│   ├── README_NOTEBOARD.md     # 留言板模式說明文件
+│   ├── EPAPER_SETUP.md         # 電子紙設定指南
+│   ├── README_NOTEBOARD_EPAPER.md
+│   └── README_NOTEBOARD_OFFLINE_MAP.md # 離線地圖說明文件
 │
-├── static/
-│   └── socket.io.min.js        # 離線版 Socket.IO 函式庫
+├── scripts/                    # 系統設定與維護腳本
+│   ├── setup_wifi.sh           # 自動設定 WiFi AP
+│   ├── setup_dns.sh            # 自動設定 dnsmasq (Captive Portal)
+│   ├── setup_services.sh       # 自動安裝 Systemd 服務
+│   ├── download_fonts.sh       # 電子紙字型下載腳本
+│   └── quick_install.sh        # 一鍵安裝引導腳本
 │
+├── deploy/                     # 部署相關設定檔
+│   └── systemd/                # Systemd 服務檔 (meshbridge.service 等)
 │
-├── setup_wifi.sh               # [腳本] 自動設定 WiFi AP (依據 MAC 碼)
-├── setup_dns.sh                # [腳本] 自動設定 dnsmasq (Captive Portal)
-├── setup_services.sh           # [腳本] 自動安裝 Systemd 服務 (複製與註冊)
-│
-├── meshbridge-wifi.service     # [設定] WiFi 設定服務檔 (供 setup_services.sh 複製用)
-└── meshbridge.service          # [設定] 主程式服務檔 (供 setup_services.sh 複製用)
-
+├── templates/                  # 前端 HTML 模板
+└── static/                     # 靜態資源
 ```
 
 ## 自動下載安裝 (推薦)
@@ -104,7 +110,7 @@ MeshBridge/
 如果您使用的是 Raspberry Pi OS (Debian-based)，可以使用以下指令一鍵完成下載與安裝：
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/SCWhite/MeshBridge/main/quick_install.sh | bash
+curl -sSL https://raw.githubusercontent.com/SCWhite/MeshBridge/main/scripts/quick_install.sh | bash
 ```
 
 ## 自動化安裝 (手動下載)
@@ -155,10 +161,10 @@ pip install -r requirements.txt
 執行以下指令以將PI設定成 WiFi 熱點：
 ```bash
 # 給予腳本執行權限
-chmod +x setup_wifi.sh
+chmod +x scripts/setup_wifi.sh
 
 # 執行設定 (只需執行一次，之後會由 Systemd 接手)
-sudo ./setup_wifi.sh
+sudo ./scripts/setup_wifi.sh
 ```
 
 > [!IMPORTANT]
@@ -169,8 +175,8 @@ sudo ./setup_wifi.sh
 執行此腳本以設定 dnsmasq。這是 Captive Portal 的核心，負責將連入使用者的所有網域請求導向樹莓派的聊天室。
 
 ```bash
-chmod +x setup_dns.sh
-sudo ./setup_dns.sh
+chmod +x scripts/setup_dns.sh
+sudo ./scripts/setup_dns.sh
 ```
 
 > [!NOTE]
@@ -182,8 +188,8 @@ sudo ./setup_dns.sh
 
 ```Bash
 
-chmod +x setup_services.sh
-sudo ./setup_services.sh
+chmod +x scripts/setup_services.sh
+sudo ./scripts/setup_services.sh
 ```
 > [!NOTE]
 > 說明：此腳本會將專案中的 .service 檔案複製到系統目錄，並設定開機自動啟動。
