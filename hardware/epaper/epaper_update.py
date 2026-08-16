@@ -11,18 +11,17 @@ ePaper 顯示更新獨立腳本。
 import sys
 import os
 
-# 加入 ePaper 驅動庫路徑
+# 載入專案根目錄與 ePaper 驅動庫路徑
 basedir = os.path.dirname(os.path.realpath(__file__))
+project_root = os.path.abspath(os.path.join(basedir, '..', '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 driverdir = os.path.join(basedir, 'epaper_driver')
 if driverdir not in sys.path:
     sys.path.insert(0, driverdir)
 
-
-# 支援的裝置對應表：device_id -> (模組名稱, 清屏參數)
-DEVICE_DRIVERS = {
-    'weshare-epd7in3e': {'module': 'epd7in3e', 'clear_arg': 0x11},
-    'weshare-epd7in5_V2': {'module': 'epd7in5_V2', 'clear_arg': None},
-}
+from hardware.epaper.device_registry import DEVICE_DRIVERS
 
 
 def get_driver(device_id):
