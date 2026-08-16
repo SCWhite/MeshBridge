@@ -11,18 +11,17 @@ ePaper 顯示更新獨立腳本。
 import sys
 import os
 
-# 加入 ePaper 驅動庫路徑
+# 載入專案根目錄與 ePaper 驅動庫路徑
 basedir = os.path.dirname(os.path.realpath(__file__))
+project_root = os.path.abspath(os.path.join(basedir, '..', '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 driverdir = os.path.join(basedir, 'epaper_driver')
 if driverdir not in sys.path:
     sys.path.insert(0, driverdir)
 
-
-# 支援的裝置對應表：device_id -> (模組名稱, 清屏參數)
-DEVICE_DRIVERS = {
-    'weshare-epd7in3e': {'module': 'epd7in3e', 'clear_arg': 0x11},
-    'weshare-epd7in5_V2': {'module': 'epd7in5_V2', 'clear_arg': None},
-}
+from hardware.epaper.device_registry import DEVICE_DRIVERS
 
 
 def get_driver(device_id):
@@ -114,7 +113,9 @@ def clear_display(device_id):
 def check_epaper_enabled():
     """檢查 config.py 是否啟用 ePaper 功能"""
     try:
-        sys.path.insert(0, basedir)
+        project_root = os.path.abspath(os.path.join(basedir, '..', '..'))
+        if project_root not in sys.path:
+            sys.path.insert(0, project_root)
         import config
         module_id = getattr(config, 'EPAPER_MODULE_ID', None)
         if not module_id or not module_id.strip():

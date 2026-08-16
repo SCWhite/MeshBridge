@@ -36,32 +36,12 @@ def log(msg):
 
 def shutdown_epaper():
     """呼叫 epaper_update.py clear 進行電子紙清屏"""
-    script = os.path.join(basedir, 'epaper_update.py')
-    if not os.path.exists(script):
-        log('[Shutdown] epaper_update.py 不存在，跳過電子紙清屏')
-        return
-
-    log('[Shutdown] 執行電子紙清屏...')
-    try:
-        result = subprocess.run(
-            [python_bin, script, 'clear'],
-            capture_output=True, text=True, timeout=90, cwd=basedir
-        )
-        if result.stdout:
-            for line in result.stdout.strip().split('\n'):
-                log(line)
-        if result.stderr:
-            for line in result.stderr.strip().split('\n'):
-                log(line)
-
-        if result.returncode == 0:
-            log('[Shutdown] 電子紙清屏完成')
-        else:
-            log(f'[Shutdown] 電子紙清屏失敗 (exit code: {result.returncode})')
-    except subprocess.TimeoutExpired:
-        log('[Shutdown] 電子紙清屏超時（90秒）')
-    except Exception as e:
-        log(f'[Shutdown] 電子紙清屏執行錯誤: {e}')
+    from hardware.epaper import run_epaper_cmd
+    success = run_epaper_cmd('clear', timeout=90, log_fn=log)
+    if success:
+        log('[Shutdown] 電子紙清屏完成')
+    else:
+        log('[Shutdown] 電子紙清屏未完成或發生錯誤')
 
 
 if __name__ == '__main__':

@@ -11,19 +11,7 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
 
-# 裝置 ID 對應到顏色模式與螢幕尺寸的常數
-DEVICE_COLOR_MODE_MAPPING = {
-    'weshare-epd7in3e': {
-        'color_mode': 'full_color',
-        'screen_width': 800,
-        'screen_height': 480
-    },
-    'weshare-epd7in5_V2': {
-        'color_mode': 'mono',
-        'screen_width': 800,
-        'screen_height': 480
-    }
-}
+from hardware.epaper import DEVICE_COLOR_MODE_MAPPING, run_epaper_cmd
 
 SUPPORTED_COLOR_MODES = {'mono', 'full_color', 'dual_rb'}
 SUPPORTED_LAYOUTS = {'standard_qr', 'photo_qr'}
@@ -356,44 +344,11 @@ def display_on_epaper(image_path, device_id):
         bool: 成功為 True，失敗為 False
     """
     print(f'[ePaper] display_on_epaper() 開始執行，device_id={device_id}')
-    
-    if device_id in ('weshare-epd7in3e', 'weshare-epd7in5_V2'):
-        import subprocess
-        import os
 
-        # 透過 subprocess 執行 ePaper 更新，避免 eventlet monkey_patch 與 lgpio 衝突
+    if device_id in DEVICE_COLOR_MODE_MAPPING:
         basedir = os.path.dirname(os.path.realpath(__file__))
-        script = os.path.join(basedir, 'epaper_update.py')
         image_abs = os.path.join(basedir, image_path) if not os.path.isabs(image_path) else image_path
-        python_bin = os.path.join(basedir, 'venv', 'bin', 'python3')
-        if not os.path.exists(python_bin):
-            python_bin = 'python3'
-
-        print(f'[ePaper] 以 subprocess 執行電子紙更新...')
-        try:
-            result = subprocess.run(
-                [python_bin, script, 'display', image_abs],
-                capture_output=True, text=True, timeout=120, cwd=basedir
-            )
-            # 輸出子程序的 stdout/stderr
-            if result.stdout:
-                for line in result.stdout.strip().split('\n'):
-                    print(line)
-            if result.stderr:
-                for line in result.stderr.strip().split('\n'):
-                    print(line)
-
-            if result.returncode == 0:
-                return True
-            else:
-                print(f'[ePaper] 子程序返回錯誤碼: {result.returncode}')
-                return False
-        except subprocess.TimeoutExpired:
-            print('[ePaper] 子程序執行超時（120秒）')
-            return False
-        except Exception as e:
-            print(f'[ePaper] 子程序執行失敗: {e}')
-            return False
+        return run_epaper_cmd('display', image_abs)
     else:
         print(f'[ePaper] 尚無對應 {device_id} 的硬體驅動程式')
         return False
@@ -548,40 +503,8 @@ def clear_epaper_display():
         return False
 
     device_id = epaper_config['device_id']
-    if device_id in ('weshare-epd7in3e', 'weshare-epd7in5_V2'):
-        import subprocess
-        import os
-
-        basedir = os.path.dirname(os.path.realpath(__file__))
-        script = os.path.join(basedir, 'epaper_update.py')
-        python_bin = os.path.join(basedir, 'venv', 'bin', 'python3')
-        if not os.path.exists(python_bin):
-            python_bin = 'python3'
-
-        print('[ePaper] 以 subprocess 執行電子紙清屏...')
-        try:
-            result = subprocess.run(
-                [python_bin, script, 'clear'],
-                capture_output=True, text=True, timeout=120, cwd=basedir
-            )
-            if result.stdout:
-                for line in result.stdout.strip().split('\n'):
-                    print(line)
-            if result.stderr:
-                for line in result.stderr.strip().split('\n'):
-                    print(line)
-
-            if result.returncode == 0:
-                return True
-            else:
-                print(f'[ePaper] 清屏子程序返回錯誤碼: {result.returncode}')
-                return False
-        except subprocess.TimeoutExpired:
-            print('[ePaper] 清屏子程序執行超時（120秒）')
-            return False
-        except Exception as e:
-            print(f'[ePaper] 清屏子程序執行失敗: {e}')
-            return False
+    if device_id in DEVICE_COLOR_MODE_MAPPING:
+        return run_epaper_cmd('clear')
     else:
         print(f'[ePaper] 尚無對應 {device_id} 的清屏功能')
         return False
