@@ -96,9 +96,9 @@ EPAPER_DISPLAY_MODE = "standard_qr,w7"
 | `weshare-epd7in3e` | [Waveshare 7.3" (E)](https://www.waveshare.net/wiki/7.3inch_e-Paper_HAT_(E)_Manual) | 全彩 6色 (full_color) | 800x480 | ✅ |
 | `weshare-epd7in5_V2` | [Waveshare 7.5" V2](https://www.waveshare.net/wiki/7.5inch_e-Paper_HAT_Manual) | 黑白 (mono) | 800x480 | ✅ |
 
-### epaper_driver/ 驅動目錄
+### hardware/epaper/epaper_driver/ 驅動目錄
 
-`epaper_driver/` 目錄存放 ePaper 電子紙的硬體驅動程式，由 `epaper_update.py` 在獨立 subprocess 中載入使用。
+`hardware/epaper/epaper_driver/` 目錄存放 ePaper 電子紙的硬體驅動程式，由 `hardware/epaper/epaper_update.py` 在獨立 subprocess 中載入使用。
 
 **檔案來源：** 所有驅動檔案皆複製自 [Waveshare 官方 Python 範例庫](https://github.com/waveshare/e-Paper/tree/master/RaspberryPi_JetsonNano/python/lib/waveshare_epd)，並將 import 路徑從相對引用改為絕對引用，以配合本專案的目錄結構。
 
@@ -108,22 +108,30 @@ EPAPER_DISPLAY_MODE = "standard_qr,w7"
 | `epd7in3e.py` | Waveshare 7.3" (E) 6 色電子紙驅動 |
 | `epd7in5_V2.py` | Waveshare 7.5" V2 黑白電子紙驅動 |
 
-> **為什麼獨立目錄？** 主程式 `app_noteboard.py` 使用 `eventlet.monkey_patch()` 進行非同步 I/O，這會與 `lgpio` 的內部背景執行緒產生衝突。因此 ePaper 硬體操作透過 `epaper_update.py` 以 subprocess 方式執行，在未被 monkey_patch 的獨立 Python 程序中載入此目錄的驅動，避免衝突。
+> **為什麼獨立目錄？** 主程式 `app_noteboard.py` 使用 `eventlet.monkey_patch()` 進行非同步 I/O，這會與 `lgpio` 的內部背景執行緒產生衝突。因此 ePaper 硬體操作透過 `hardware/epaper/epaper_update.py` 以 subprocess 方式執行，在未被 monkey_patch 的獨立 Python 程序中載入此目錄的驅動，避免衝突。
 
 ## 程式實作方式說明
 
 ### 自動截圖流程
 
-1. 系統根據設定組成 ePaper 顯示頁面 URL（例如：`http://localhost/epaper?color_mode=full_color&layout=standard_qr&canvas=w7`）
-2. 檢查 Flask 應用程式是否可訪問（最多重試 3 次，每次間隔 2 秒）
-3. 使用 `chromium` 命令行工具啟動無頭瀏覽器進行截圖
-4. 設定視窗尺寸為目標尺寸 + 100px 高度緩衝（避免底部裁切）
-5. 擷取截圖並裁切到精確的目標尺寸（例如 800x480）
-6. 根據顏色模式處理圖片：
-   - **mono（黑白）**：轉換為 1-bit 黑白圖片
-   - **full_color（全彩）**：保持 RGB 全彩
-   - **dual_rb（紅黑雙色）**：只保留紅、黑、白三色
-7. 儲存處理後的圖片至 `./epaper_images/epaper_display.png`
+1. 當留言板狀態變更或觸發更新時，系統在背景執行緒中呼叫 `update_epaper_display()`
+2. 啟動 `chromium-browser --headless` 擷取本地頁面（以 2x 解析度超取樣渲染）
+3. 使用 Pillow 將截圖處理為符合目標電子紙畫布與顏色模式的 PNG 圖檔
+4. 透過 `subprocess` 執行 `hardware/epaper/epaper_update.py` 將圖檔傳送到 ePaper 硬體模組顯示
+
+### 手動與自動清屏（刷白）
+
+長期不使用墨水屏時，應將屏幕刷白後再存放，避免殘影損壞膜片。
+
+透過命令列手動清屏：
+
+```bash
+cd /home/pi/MeshBridge
+source venv/bin/activate
+python3 hardware/epaper/epaper_update.py clear
+```
+
+> **自動刷白：** 當執行 `sudo shutdown now` 或 `sudo systemctl stop meshbridge.service` 停止服務時，systemd 會透過 `ExecStop` 自動呼叫 `app_shutdown.py`，該腳本會執行 `hardware/epaper/epaper_update.py clear` 將屏幕刷白後才完成關機流程，無需手動清屏。
 
 ### 硬體保護機制
 

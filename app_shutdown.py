@@ -36,7 +36,7 @@ def log(msg):
 
 def shutdown_epaper():
     """呼叫 epaper_update.py clear 進行電子紙清屏"""
-    script = os.path.join(basedir, 'epaper_update.py')
+    script = os.path.join(basedir, 'hardware', 'epaper', 'epaper_update.py')
     if not os.path.exists(script):
         log('[Shutdown] epaper_update.py 不存在，跳過電子紙清屏')
         return

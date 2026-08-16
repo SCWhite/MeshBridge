@@ -363,7 +363,7 @@ def display_on_epaper(image_path, device_id):
 
         # 透過 subprocess 執行 ePaper 更新，避免 eventlet monkey_patch 與 lgpio 衝突
         basedir = os.path.dirname(os.path.realpath(__file__))
-        script = os.path.join(basedir, 'epaper_update.py')
+        script = os.path.join(basedir, 'hardware', 'epaper', 'epaper_update.py')
         image_abs = os.path.join(basedir, image_path) if not os.path.isabs(image_path) else image_path
         python_bin = os.path.join(basedir, 'venv', 'bin', 'python3')
         if not os.path.exists(python_bin):
@@ -553,7 +553,7 @@ def clear_epaper_display():
         import os
 
         basedir = os.path.dirname(os.path.realpath(__file__))
-        script = os.path.join(basedir, 'epaper_update.py')
+        script = os.path.join(basedir, 'hardware', 'epaper', 'epaper_update.py')
         python_bin = os.path.join(basedir, 'venv', 'bin', 'python3')
         if not os.path.exists(python_bin):
             python_bin = 'python3'

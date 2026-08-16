@@ -101,6 +101,9 @@ MeshBridge/
 ├── deploy/                     # 部署相關設定檔
 │   └── systemd/                # Systemd 服務檔 (meshbridge.service 等)
 │
+├── hardware/                   # 硬體驅動與周邊模組
+│   └── epaper/                 # 電子紙驅動程式與更新腳本 (epaper_driver/, epaper_update.py)
+│
 ├── templates/                  # 前端 HTML 模板
 └── static/                     # 靜態資源
 ```

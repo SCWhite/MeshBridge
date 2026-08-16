@@ -114,7 +114,9 @@ def clear_display(device_id):
 def check_epaper_enabled():
     """檢查 config.py 是否啟用 ePaper 功能"""
     try:
-        sys.path.insert(0, basedir)
+        project_root = os.path.abspath(os.path.join(basedir, '..', '..'))
+        if project_root not in sys.path:
+            sys.path.insert(0, project_root)
         import config
         module_id = getattr(config, 'EPAPER_MODULE_ID', None)
         if not module_id or not module_id.strip():
